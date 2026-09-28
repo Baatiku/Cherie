@@ -28,31 +28,39 @@ object SessionApi {
     private fun connection(url:String,method:String):HttpURLConnection {
         return (URL(url).openConnection() as HttpURLConnection).apply {
             requestMethod=method
-            connectTimeout=8000
-            readTimeout=20000
+            connectTimeout=15000
+            readTimeout=45000
             setRequestProperty("Content-Type","application/json")
         }
     }
 
     fun create(baseUrl:String,profile:String,effect:String):LiveSession {
         val conn=connection(baseUrl.trimEnd('/')+"/v1/sessions","POST")
-        conn.doOutput=true
-        val body=JSONObject().put("profile",profile).put("effect",effect)
-        conn.outputStream.use { it.write(body.toString().toByteArray()) }
-        check(conn.responseCode in 200..299) { "Session creation failed: "+conn.responseCode }
-        val json=JSONObject(conn.inputStream.bufferedReader().use { it.readText() })
-        return LiveSession(json.getString("session_id"),json.getString("token"),json.getLong("expires_at"))
+        try {
+            conn.doOutput=true
+            val body=JSONObject().put("profile",profile).put("effect",effect)
+            conn.outputStream.use { it.write(body.toString().toByteArray()) }
+            check(conn.responseCode in 200..299) { "Session creation failed: "+conn.responseCode }
+            val json=JSONObject(conn.inputStream.bufferedReader().use { it.readText() })
+            return LiveSession(json.getString("session_id"),json.getString("token"),json.getLong("expires_at"))
+        } finally {
+            conn.disconnect()
+        }
     }
 
     fun iceServers(baseUrl:String):List<IceServerConfig> {
         val conn=connection(baseUrl.trimEnd('/')+"/v1/ice","GET")
-        check(conn.responseCode in 200..299) { "ICE config failed: "+conn.responseCode }
-        val array=JSONObject(conn.inputStream.bufferedReader().use { it.readText() }).getJSONArray("servers")
-        return (0 until array.length()).map { index ->
-            val item=array.getJSONObject(index)
-            val urlsArray=item.getJSONArray("urls")
-            val urls=(0 until urlsArray.length()).map { urlsArray.getString(it) }
-            IceServerConfig(urls,item.optString("username"),item.optString("credential"))
+        try {
+            check(conn.responseCode in 200..299) { "ICE config failed: "+conn.responseCode }
+            val array=JSONObject(conn.inputStream.bufferedReader().use { it.readText() }).getJSONArray("servers")
+            return (0 until array.length()).map { index ->
+                val item=array.getJSONObject(index)
+                val urlsArray=item.getJSONArray("urls")
+                val urls=(0 until urlsArray.length()).map { urlsArray.getString(it) }
+                IceServerConfig(urls,item.optString("username"),item.optString("credential"))
+            }
+        } finally {
+            conn.disconnect()
         }
     }
 
@@ -90,6 +98,38 @@ object SessionApi {
             check(code in 200..299) { "Health check failed: $code" }
             val json=JSONObject(conn.inputStream.bufferedReader().use { it.readText() })
             return parseHealth(json)
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    fun validate(baseUrl:String,session:LiveSession):Boolean {
+        val conn=connection(
+            baseUrl.trimEnd('/')+"/v1/sessions/"+session.sessionId+"/validate",
+            "GET"
+        )
+        conn.setRequestProperty("Authorization","Bearer "+session.token)
+        try {
+            val code=conn.responseCode
+            check(code in 200..299) { "Session validation failed: $code" }
+            return JSONObject(conn.inputStream.bufferedReader().use { it.readText() })
+                .optBoolean("ok",false)
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    fun dispose(baseUrl:String,session:LiveSession):Boolean {
+        val conn=connection(
+            baseUrl.trimEnd('/')+"/v1/sessions/"+session.sessionId,
+            "DELETE"
+        )
+        conn.setRequestProperty("Authorization","Bearer "+session.token)
+        try {
+            val code=conn.responseCode
+            check(code in 200..299) { "Session disposal failed: $code" }
+            return JSONObject(conn.inputStream.bufferedReader().use { it.readText() })
+                .optBoolean("ok",false)
         } finally {
             conn.disconnect()
         }

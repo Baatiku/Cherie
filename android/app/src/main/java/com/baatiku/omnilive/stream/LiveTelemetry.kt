@@ -12,6 +12,7 @@ data class LiveTelemetryState(
     val packetLoss:Double?=null,
     val packetsLost:Long?=null,
     val framesReceived:Long?=null,
+    val backendProcessorP95Ms:Long?=null,
     val lastError:String?=null
 )
 

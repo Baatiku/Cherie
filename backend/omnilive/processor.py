@@ -1,15 +1,25 @@
-from dataclasses import dataclass
-from .models import FrameMeta
+from __future__ import annotations
+import time
+from typing import Protocol
+from av import VideoFrame
+from .telemetry import processor_window
 
-@dataclass
-class ProcessResult:
-    sequence: int
-    processing_ms: float
-    detector_ran: bool
+class VideoProcessor(Protocol):
+    async def process(self,frame:VideoFrame)->VideoFrame: ...
 
-class FrameProcessor:
-    def __init__(self, detector_interval: int = 8):
-        self.detector_interval = max(1, detector_interval)
+class PassthroughProcessor:
+    async def process(self,frame:VideoFrame)->VideoFrame:
+        return frame
 
-    def process_meta(self, meta: FrameMeta) -> ProcessResult:
-        return ProcessResult(meta.sequence, 0.1, meta.sequence % self.detector_interval == 0)
+class TimedProcessor:
+    def __init__(self,delegate:VideoProcessor|None=None):
+        self.delegate=delegate or PassthroughProcessor()
+
+    async def process(self,frame:VideoFrame)->VideoFrame:
+        started=time.perf_counter()
+        try:
+            return await self.delegate.process(frame)
+        finally:
+            processor_window.add((time.perf_counter()-started)*1000.0)
+
+processor=TimedProcessor()

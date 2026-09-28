@@ -75,6 +75,7 @@ class MainActivity:ComponentActivity() {
                         Text("ICE: "+telemetry.iceState)
                         Text("Adaptive profile: "+telemetry.activeProfile)
                         Text("RTT: "+(telemetry.rttMs?.toString() ?: "—")+" ms")
+                        Text("Backend p95: "+(telemetry.backendProcessorP95Ms?.toString() ?: "—")+" ms")
                         Text("Packet loss: "+(telemetry.packetLoss?.let { String.format(Locale.US,"%.1f%%",it*100) } ?: "—"))
                         Text("Frames received: "+(telemetry.framesReceived?.toString() ?: "—"))
                         telemetry.lastError?.let { Text("Status: "+it,color=MaterialTheme.colorScheme.error) }

@@ -5,29 +5,30 @@ from threading import Lock
 
 @dataclass(frozen=True)
 class Snapshot:
-    count: int
-    p50_ms: float
-    p95_ms: float
+    count:int
+    p50_ms:float
+    p95_ms:float
 
 class LatencyWindow:
-    def __init__(self, size:int=300):
+    def __init__(self,size:int=300):
         self._values=deque(maxlen=max(10,size))
         self._lock=Lock()
 
-    def add(self, value_ms:float) -> None:
-        if value_ms < 0:
+    def add(self,value_ms:float)->None:
+        if value_ms<0:
             return
         with self._lock:
             self._values.append(float(value_ms))
 
-    def snapshot(self) -> Snapshot:
+    def snapshot(self)->Snapshot:
         with self._lock:
             values=sorted(self._values)
         if not values:
             return Snapshot(0,0.0,0.0)
-        def percentile(q:float) -> float:
+        def percentile(q:float)->float:
             index=min(len(values)-1,max(0,round((len(values)-1)*q)))
             return values[index]
         return Snapshot(len(values),percentile(0.50),percentile(0.95))
 
-latency_window=LatencyWindow()
+media_wait_window=LatencyWindow()
+processor_window=LatencyWindow()

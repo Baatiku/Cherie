@@ -3,8 +3,9 @@ import asyncio
 import time
 from aiortc import MediaStreamTrack, RTCPeerConnection, RTCSessionDescription
 from .models import WebRtcAnswer, WebRtcOffer
+from .processor import processor
 from .session import registry
-from .telemetry import latency_window
+from .telemetry import media_wait_window
 
 _peers:set[RTCPeerConnection]=set()
 
@@ -17,13 +18,13 @@ class LowLatencyVideoTrack(MediaStreamTrack):
         self.sequence=0
 
     async def recv(self):
-        started=time.perf_counter()
+        wait_started=time.perf_counter()
         frame=await self.source.recv()
+        media_wait_window.add((time.perf_counter()-wait_started)*1000.0)
         self.sequence+=1
-        latency_window.add((time.perf_counter()-started)*1000.0)
-        return frame
+        return await processor.process(frame)
 
-async def accept_offer(body:WebRtcOffer) -> WebRtcAnswer:
+async def accept_offer(body:WebRtcOffer)->WebRtcAnswer:
     if registry.authenticate(body.session_id,body.token) is None:
         raise PermissionError("invalid or expired session")
 
@@ -51,7 +52,7 @@ async def accept_offer(body:WebRtcOffer) -> WebRtcAnswer:
     await pc.setLocalDescription(answer)
     return WebRtcAnswer(sdp=pc.localDescription.sdp,type=pc.localDescription.type)
 
-async def close_all_peers() -> None:
+async def close_all_peers()->None:
     peers=list(_peers)
     _peers.clear()
     await asyncio.gather(*(pc.close() for pc in peers),return_exceptions=True)

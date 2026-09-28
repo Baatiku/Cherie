@@ -14,21 +14,21 @@
 - [x] dynamic STUN/TURN configuration
 - [x] runtime backend URL
 - [x] WebRTC RTT/loss/frame telemetry
-- [x] backend media latency window
 - [x] exponential reconnect/backoff
-- [x] adaptive camera resolution/FPS from RTT and loss
+- [x] adaptive resolution/FPS from RTT, loss and backend p95
+- [x] backend media/processor latency windows
 - [x] EGL renderer cleanup
-- [ ] incorporate backend inference p95 into adaptive controller
 - [ ] TURN deployment near target users
 
 ## Phase 3 — GPU visual processor
-- [ ] GPU-resident processing interface
+- [x] GPU-resident processor contract
+- [x] processor p50/p95 timing
+- [x] passthrough processor for transport benchmarks
 - [ ] ONNX Runtime CUDA/TensorRT image
 - [ ] detector + landmark tracker
 - [ ] temporal crop tracking
 - [ ] visual-effects model adapter
 - [ ] masks/color correction/enhancement
-- [ ] inference p50/p95 telemetry
 
 ## Phase 4 — rooted Android lab adapter
 - [ ] isolated adapter module

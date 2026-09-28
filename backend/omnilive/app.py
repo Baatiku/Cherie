@@ -7,22 +7,30 @@ from .models import (
     WebRtcAnswer, WebRtcOffer, IceConfig, IceServer
 )
 from .session import registry
-from .telemetry import latency_window
-from .webrtc import accept_offer, close_all_peers
+from .telemetry import media_wait_window,processor_window
+from .webrtc import accept_offer,close_all_peers
 
-app=FastAPI(title="OmniLive",version="0.4.0")
+app=FastAPI(title="OmniLive",version="0.5.0")
+
+def telemetry_payload():
+    media=media_wait_window.snapshot()
+    proc=processor_window.snapshot()
+    return {
+        "media_wait_p50_ms":media.p50_ms,
+        "media_wait_p95_ms":media.p95_ms,
+        "media_samples":media.count,
+        "processor_p50_ms":proc.p50_ms,
+        "processor_p95_ms":proc.p95_ms,
+        "processor_samples":proc.count,
+    }
 
 @app.get("/health")
 def health():
-    snapshot=latency_window.snapshot()
-    return {
-        "ok":True,
-        "service":"omnilive",
-        "time":int(time.time()),
-        "media_wait_p50_ms":snapshot.p50_ms,
-        "media_wait_p95_ms":snapshot.p95_ms,
-        "media_samples":snapshot.count,
-    }
+    return {"ok":True,"service":"omnilive","time":int(time.time()),**telemetry_payload()}
+
+@app.get("/v1/telemetry")
+def telemetry():
+    return telemetry_payload()
 
 @app.get("/v1/ice",response_model=IceConfig)
 def ice_config():

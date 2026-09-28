@@ -31,6 +31,7 @@ class WebRtcClient(
     private var activeProfileName=initialProfileName
     private var previousLost:Long?=null
     private var previousReceived:Long?=null
+    @Volatile private var backendP95Ms:Long=0
 
     fun start() {
         stopped.set(false)
@@ -66,7 +67,6 @@ class WebRtcClient(
                 .setVideoDecoderFactory(DefaultVideoDecoderFactory(egl.eglBaseContext))
                 .createPeerConnectionFactory()
         }
-
         if(capturer==null) {
             val enumerator=Camera2Enumerator(context)
             val cameraName=enumerator.deviceNames.firstOrNull { enumerator.isFrontFacing(it) }
@@ -75,8 +75,8 @@ class WebRtcClient(
             val helper=SurfaceTextureHelper.create("OmniLiveCapture",egl.eglBaseContext)
             val source=factory.createVideoSource(false)
             capturer!!.initialize(helper,context,source.capturerObserver)
-            val profile=QualityProfile.fromName(activeProfileName)
-            capturer!!.startCapture(profile.width,profile.height,profile.cameraFps)
+            val p=QualityProfile.fromName(activeProfileName)
+            capturer!!.startCapture(p.width,p.height,p.cameraFps)
             localTrack=factory.createVideoTrack("omnilive-camera",source)
         }
     }
@@ -97,9 +97,19 @@ class WebRtcClient(
 
         statsJob?.cancel()
         statsJob=scope.launch {
+            var backendPollCounter=0
             while(isActive) {
                 delay(2000)
                 collectStats()
+                backendPollCounter++
+                if(backendPollCounter>=3) {
+                    backendPollCounter=0
+                    try {
+                        backendP95Ms=SessionApi.telemetry(baseUrl).processorP95Ms
+                        LiveTelemetry.update { it.copy(backendProcessorP95Ms=backendP95Ms) }
+                    } catch(_:Throwable) {
+                    }
+                }
             }
         }
     }
@@ -174,15 +184,13 @@ class WebRtcClient(
                 val receivedDelta=max(0,packetsReceived-oldReceived)
                 val total=lostDelta+receivedDelta
                 val loss=if(total>0) lostDelta.toDouble()/total.toDouble() else 0.0
-                val next=quality.update(rttMs!!,loss,0)
+                val next=quality.update(rttMs!!,loss,backendP95Ms)
                 if(next!=activeProfileName) {
                     activeProfileName=next
                     val p=QualityProfile.fromName(next)
                     capturer?.changeCaptureFormat(p.width,p.height,p.cameraFps)
                     LiveTelemetry.update { it.copy(activeProfile=next,packetLoss=loss) }
-                } else {
-                    LiveTelemetry.update { it.copy(packetLoss=loss) }
-                }
+                } else LiveTelemetry.update { it.copy(packetLoss=loss) }
             }
             previousLost=packetsLost
             previousReceived=packetsReceived

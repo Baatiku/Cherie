@@ -1,13 +1,13 @@
-val rootLabEnabled = providers.gradleProperty("omnilive.rootLab")
-    .orNull
-    ?.equals("true",ignoreCase=true)
-    ?: false
-
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
 }
+
+val rootLabEnabled = providers.gradleProperty("omnilive.rootLab")
+    .orNull
+    ?.equals("true",ignoreCase=true)
+    ?: false
 
 android {
     namespace = "com.baatiku.omnilive"

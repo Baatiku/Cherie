@@ -25,6 +25,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.baatiku.omnilive.diagnostics.DeviceDiagnostics
 import com.baatiku.omnilive.diagnostics.LiveDiagnostics
 import com.baatiku.omnilive.net.TransportPreflight
+import com.baatiku.omnilive.stream.LiveSessionPhase
+import com.baatiku.omnilive.stream.LiveSessionState
 import com.baatiku.omnilive.stream.LiveStreamService
 import com.baatiku.omnilive.stream.LiveTelemetry
 import com.baatiku.omnilive.stream.ReferenceImageStore
@@ -42,7 +44,8 @@ class MainActivity:ComponentActivity() {
             MaterialTheme {
                 val prefs=remember { getSharedPreferences("omnilive",MODE_PRIVATE) }
                 val scope=rememberCoroutineScope()
-                var running by remember { mutableStateOf(false) }
+                val liveSession by LiveSessionState.state.collectAsStateWithLifecycle()
+                val running=liveSession.isRunning
                 var profile by remember { mutableStateOf("balanced") }
                 var effect by remember { mutableStateOf("original") }
                 var backendUrl by remember {
@@ -320,12 +323,16 @@ class MainActivity:ComponentActivity() {
                                             .putExtra("effect",effect)
                                             .putExtra("backend_url",backendUrl)
                                         referencePath?.let { intent.putExtra("reference_image_path",it) }
-                                        ContextCompat.startForegroundService(this@MainActivity,intent)
-                                        running=true
+                                        try {
+                                            LiveSessionState.starting(profile,effect,backendUrl)
+                                            ContextCompat.startForegroundService(this@MainActivity,intent)
+                                        } catch(t:Throwable) {
+                                            LiveSessionState.failed(t)
+                                        }
                                     }
                                 } else {
+                                    LiveSessionState.stopping()
                                     stopService(Intent(this@MainActivity,LiveStreamService::class.java))
-                                    running=false
                                 }
                             },
                             enabled=running || cameraGranted
@@ -386,6 +393,12 @@ class MainActivity:ComponentActivity() {
                                 (telemetry.droppedInferenceFrames?.toString() ?: "—")+" · Input drops: "+
                                 (telemetry.inputOverwrittenFrames?.toString() ?: "—")
                         )
+                        if(liveSession.phase==LiveSessionPhase.ERROR) {
+                            Text(
+                                "Service: "+(liveSession.error ?: "Unable to start live session"),
+                                color=MaterialTheme.colorScheme.error
+                            )
+                        }
                         telemetry.lastError?.let { Text("Status: "+it,color=MaterialTheme.colorScheme.error) }
                     }
                 }

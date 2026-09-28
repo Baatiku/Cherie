@@ -11,6 +11,8 @@ def test_metrics_endpoint_exposes_core_counters():
     assert "omnilive_processor_latency_ms" in response.text
     assert "omnilive_input_overwritten_frames_total" in response.text
     assert "omnilive_model_loaded" in response.text
+    assert "omnilive_model_execution_failures_total" in response.text
+    assert "omnilive_model_recoveries_total" in response.text
 
 
 def test_health_has_explicit_status():

@@ -5,6 +5,7 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.os.SystemClock
+import android.view.Surface
 import com.baatiku.omnilive.net.LiveSession
 import com.baatiku.omnilive.net.SessionApi
 import kotlinx.coroutines.*
@@ -15,6 +16,7 @@ import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import org.json.JSONObject
 import org.webrtc.*
+import java.util.concurrent.CopyOnWriteArraySet
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.max
@@ -57,6 +59,7 @@ class WebRtcClient(
     @Volatile private var backendP95Ms:Long=0
     @Volatile private var frameMarksEnabled=false
     private val frameLatency=FrameLatencyTracker()
+    private val surfaceOutputs=CopyOnWriteArraySet<SurfaceFrameOutput>()
 
     private val captureTimingSink=object:VideoSink {
         override fun onFrame(frame:VideoFrame) {
@@ -84,6 +87,26 @@ class WebRtcClient(
             }
             remoteSink.onFrame(frame)
         }
+    }
+
+    fun createSurfaceOutput(
+        surface:Surface,
+        mirror:Boolean=false,
+        onSwapBuffers:((Long)->Unit)?=null
+    ):SurfaceFrameOutput {
+        check(!stopped.get()) { "WebRtcClient is stopped" }
+        val output=SurfaceFrameOutput(
+            sharedContext=egl.eglBaseContext,
+            onSwapBuffers=onSwapBuffers
+        )
+        output.attach(surface,mirror)
+        surfaceOutputs.add(output)
+        return output
+    }
+
+    fun releaseSurfaceOutput(output:SurfaceFrameOutput) {
+        surfaceOutputs.remove(output)
+        output.close()
     }
 
     private val networkCallback=object:ConnectivityManager.NetworkCallback() {
@@ -580,6 +603,10 @@ class WebRtcClient(
         }
         currentNetwork=null
         hasSeenNetwork=false
+        surfaceOutputs.forEach { output ->
+            try { output.close() } catch(_:Throwable) {}
+        }
+        surfaceOutputs.clear()
         try { capturer?.stopCapture() } catch(_:InterruptedException) {}
         capturer?.dispose()
         capturer=null

@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from threading import RLock
-import os
+from threading import Lock
 import subprocess
 import time
 
@@ -11,20 +10,24 @@ import numpy as np
 from .config import settings
 
 
+_GPU_PROVIDERS = ("TensorrtExecutionProvider", "CUDAExecutionProvider")
+
+
 class OnnxRuntime:
     def __init__(self):
-        self._lock = RLock()
+        self._lock = Lock()
         self._session = None
         self._model_path = None
         self._providers: list[str] = []
         self._last_error: str | None = None
+        self._last_inference_error: str | None = None
         self._load_ms: float | None = None
         self._load_count = 0
-        self._failure_count = 0
+        self._execution_failure_count = 0
         self._recovery_count = 0
-        self._retry_after_monotonic = 0.0
-        self._last_failure_at: float | None = None
-        self._last_success_at: float | None = None
+        self._consecutive_failures = 0
+        self._cooldown_until = 0.0
+        self._provider_quarantine: dict[str, float] = {}
 
     @property
     def loaded(self) -> bool:
@@ -46,47 +49,6 @@ class OnnxRuntime:
     def load_ms(self) -> float | None:
         return self._load_ms
 
-    @property
-    def retry_cooldown_remaining_ms(self) -> float:
-        remaining = self._retry_after_monotonic - time.monotonic()
-        return round(max(0.0, remaining) * 1000.0, 3)
-
-    @property
-    def can_attempt_inference(self) -> bool:
-        return self.retry_cooldown_remaining_ms <= 0.0
-
-    def _cooldown_seconds(self) -> float:
-        return max(0.1, float(getattr(settings, "model_retry_cooldown_seconds", 2.0)))
-
-    def _record_failure(self, exc: Exception, invalidate_session: bool) -> None:
-        with self._lock:
-            self._last_error = str(exc)
-            self._failure_count += 1
-            self._last_failure_at = time.time()
-            self._retry_after_monotonic = time.monotonic() + self._cooldown_seconds()
-            if invalidate_session:
-                if self._session is not None:
-                    self._recovery_count += 1
-                self._session = None
-                self._providers = []
-
-    def _record_success(self) -> None:
-        with self._lock:
-            self._failure_count = 0
-            self._last_error = None
-            self._retry_after_monotonic = 0.0
-            self._last_success_at = time.time()
-
-    def reset(self, reason: str = "manual reset") -> None:
-        with self._lock:
-            had_session = self._session is not None
-            self._session = None
-            self._providers = []
-            self._retry_after_monotonic = 0.0
-            self._last_error = reason
-            if had_session:
-                self._recovery_count += 1
-
     def _resolve_path(self) -> Path | None:
         model_id = (settings.model_id or "").strip()
         if not model_id or model_id == "none":
@@ -106,6 +68,37 @@ class OnnxRuntime:
             raise FileNotFoundError("configured model not found: " + str(candidate))
         return candidate
 
+    def _prune_quarantine_locked(self, now: float) -> None:
+        expired = [provider for provider, until in self._provider_quarantine.items() if until <= now]
+        for provider in expired:
+            self._provider_quarantine.pop(provider, None)
+
+    def _provider_preferences_locked(self, available: list[str], now: float) -> list[str]:
+        self._prune_quarantine_locked(now)
+        healthy_gpu = [
+            provider
+            for provider in _GPU_PROVIDERS
+            if provider in available and provider not in self._provider_quarantine
+        ]
+        gpu_available = any(provider in available for provider in _GPU_PROVIDERS)
+        cpu_available = "CPUExecutionProvider" in available
+        allow_cpu = bool(getattr(settings, "model_allow_cpu_fallback", False))
+
+        if healthy_gpu:
+            preferred = list(healthy_gpu)
+            if allow_cpu and cpu_available:
+                preferred.append("CPUExecutionProvider")
+            return preferred
+        if gpu_available:
+            if allow_cpu and cpu_available:
+                return ["CPUExecutionProvider"]
+            raise RuntimeError("all GPU execution providers are temporarily quarantined")
+        if cpu_available:
+            return ["CPUExecutionProvider"]
+        if available:
+            return list(available)
+        raise RuntimeError("no ONNX execution providers are available")
+
     def load(self, strict: bool = False):
         started = time.perf_counter()
         try:
@@ -115,41 +108,19 @@ class OnnxRuntime:
             with self._lock:
                 if self._session is not None and self._model_path == path:
                     return self._session
-                if not self.can_attempt_inference:
-                    message = (
-                        "model runtime recovery cooldown active for "
-                        + str(self.retry_cooldown_remaining_ms)
-                        + " ms"
-                    )
-                    if strict:
-                        raise RuntimeError(message)
-                    return None
-
                 import onnxruntime as ort
 
-                available = ort.get_available_providers()
-                preferred = [
-                    provider
-                    for provider in (
-                        "TensorrtExecutionProvider",
-                        "CUDAExecutionProvider",
-                        "CPUExecutionProvider",
-                    )
-                    if provider in available
-                ]
-                if not preferred:
-                    preferred = ["CPUExecutionProvider"]
-                session = ort.InferenceSession(str(path), providers=preferred)
-                self._session = session
+                available = list(ort.get_available_providers())
+                preferred = self._provider_preferences_locked(available, time.monotonic())
+                self._session = ort.InferenceSession(str(path), providers=preferred)
                 self._model_path = path
-                self._providers = list(session.get_providers())
+                self._providers = list(self._session.get_providers())
+                self._last_error = None
                 self._load_ms = (time.perf_counter() - started) * 1000.0
                 self._load_count += 1
-                self._record_success()
-                return session
+                return self._session
         except Exception as exc:
-            if "recovery cooldown active" not in str(exc):
-                self._record_failure(exc, invalidate_session=False)
+            self._last_error = str(exc)
             if strict:
                 raise
             return None
@@ -243,6 +214,73 @@ class OnnxRuntime:
             value = value[None, ...]
         return value, nchw
 
+    @staticmethod
+    def _is_provider_failure(exc: Exception) -> bool:
+        text = str(exc).lower()
+        markers = (
+            "cuda",
+            "tensorrt",
+            "execution provider",
+            "cudnn",
+            "cublas",
+            "gpu",
+            "device-side",
+            "out of memory",
+            "failed to allocate",
+        )
+        return any(marker in text for marker in markers)
+
+    @staticmethod
+    def _primary_gpu_provider(session) -> str | None:
+        try:
+            providers = list(session.get_providers())
+        except Exception:
+            return None
+        return next((provider for provider in providers if provider in _GPU_PROVIDERS), None)
+
+    def _record_execution_failure(self, exc: Exception, quarantine_provider: str | None = None) -> None:
+        now = time.monotonic()
+        with self._lock:
+            self._execution_failure_count += 1
+            self._consecutive_failures += 1
+            self._last_inference_error = str(exc)
+            self._last_error = str(exc)
+            if quarantine_provider:
+                quarantine_seconds = max(
+                    0.0,
+                    float(getattr(settings, "model_provider_quarantine_seconds", 30.0)),
+                )
+                self._provider_quarantine[quarantine_provider] = now + quarantine_seconds
+                self._session = None
+                self._providers = []
+
+    def _enter_cooldown(self) -> None:
+        cooldown = max(0.0, float(getattr(settings, "model_retry_cooldown_seconds", 1.5)))
+        with self._lock:
+            self._cooldown_until = max(self._cooldown_until, time.monotonic() + cooldown)
+
+    def _cooldown_remaining_ms(self) -> int:
+        with self._lock:
+            return max(0, int(round((self._cooldown_until - time.monotonic()) * 1000.0)))
+
+    def _quarantined_providers(self) -> list[str]:
+        now = time.monotonic()
+        with self._lock:
+            self._prune_quarantine_locked(now)
+            return sorted(self._provider_quarantine)
+
+    def _mark_recovery_success(self) -> None:
+        with self._lock:
+            self._recovery_count += 1
+            self._consecutive_failures = 0
+            self._cooldown_until = 0.0
+            self._last_error = None
+
+    def _mark_inference_success(self) -> None:
+        with self._lock:
+            self._consecutive_failures = 0
+            self._cooldown_until = 0.0
+
     def memory_status(self) -> dict:
         rss_mb = None
         system_available_mb = None
@@ -308,39 +346,32 @@ class OnnxRuntime:
             "providers": self.providers,
             "load_ms": self.load_ms,
             "load_count": self._load_count,
-            "failure_count": self._failure_count,
-            "recovery_count": self._recovery_count,
-            "recovering": not self.can_attempt_inference,
-            "retry_cooldown_remaining_ms": self.retry_cooldown_remaining_ms,
-            "last_failure_at": self._last_failure_at,
-            "last_success_at": self._last_success_at,
             "last_error": self.last_error,
+            "last_inference_error": self._last_inference_error,
+            "execution_failure_count": self._execution_failure_count,
+            "recovery_count": self._recovery_count,
+            "consecutive_failures": self._consecutive_failures,
+            "recovery_cooldown_remaining_ms": self._cooldown_remaining_ms(),
+            "quarantined_providers": self._quarantined_providers(),
+            "allow_cpu_fallback": bool(getattr(settings, "model_allow_cpu_fallback", False)),
             **self.input_status(),
         }
 
-    def run_image(self, rgb: np.ndarray, reference_rgb: np.ndarray | None = None) -> np.ndarray:
-        session = self.load(strict=True)
-        if session is None:
-            return rgb
+    def _feeds(self, session, rgb: np.ndarray, reference_rgb: np.ndarray | None):
         live_meta, reference_meta = self._select_input_roles(session)
         live_value, live_nchw = self._prepare_image(rgb, live_meta)
         feeds = {live_meta.name: live_value}
-
         if reference_meta is not None:
             if reference_rgb is None:
                 raise RuntimeError("dual_image model requires a session reference image")
             reference_value, _ = self._prepare_image(reference_rgb, reference_meta)
             feeds[reference_meta.name] = reference_value
+        return feeds, live_nchw
 
-        h, w = rgb.shape[:2]
+    @staticmethod
+    def _decode_output(y: np.ndarray, live_nchw: bool, width: int, height: int) -> np.ndarray:
         import cv2
 
-        try:
-            y = session.run(None, feeds)[0]
-        except Exception as exc:
-            self._record_failure(exc, invalidate_session=True)
-            raise
-        self._record_success()
         if y.ndim == 4:
             y = y[0]
         if live_nchw and y.ndim == 3 and y.shape[0] in (1, 3, 4):
@@ -351,7 +382,48 @@ class OnnxRuntime:
         if y.shape[-1] == 1:
             y = np.repeat(y, 3, axis=-1)
         y = (y[..., :3] * 255.0).astype(np.uint8)
-        return cv2.resize(y, (w, h), interpolation=cv2.INTER_LINEAR)
+        return cv2.resize(y, (width, height), interpolation=cv2.INTER_LINEAR)
+
+    def run_image(self, rgb: np.ndarray, reference_rgb: np.ndarray | None = None) -> np.ndarray:
+        remaining_ms = self._cooldown_remaining_ms()
+        if remaining_ms > 0:
+            raise RuntimeError(f"model runtime recovery cooldown active ({remaining_ms} ms remaining)")
+
+        session = self.load(strict=True)
+        if session is None:
+            return rgb
+
+        feeds, live_nchw = self._feeds(session, rgb, reference_rgb)
+        h, w = rgb.shape[:2]
+        try:
+            y = session.run(None, feeds)[0]
+            self._mark_inference_success()
+            return self._decode_output(y, live_nchw, w, h)
+        except Exception as first_exc:
+            if not self._is_provider_failure(first_exc):
+                self._record_execution_failure(first_exc)
+                raise
+
+            failed_provider = self._primary_gpu_provider(session)
+            self._record_execution_failure(first_exc, quarantine_provider=failed_provider)
+
+        try:
+            recovered_session = self.load(strict=True)
+            if recovered_session is None:
+                raise RuntimeError("model runtime recovery could not create a replacement session")
+            recovered_feeds, recovered_nchw = self._feeds(recovered_session, rgb, reference_rgb)
+            y = recovered_session.run(None, recovered_feeds)[0]
+            self._mark_recovery_success()
+            return self._decode_output(y, recovered_nchw, w, h)
+        except Exception as recovery_exc:
+            failed_provider = (
+                self._primary_gpu_provider(self._session)
+                if self._session is not None and self._is_provider_failure(recovery_exc)
+                else None
+            )
+            self._record_execution_failure(recovery_exc, quarantine_provider=failed_provider)
+            self._enter_cooldown()
+            raise
 
 
 runtime = OnnxRuntime()

@@ -26,3 +26,20 @@ def test_rejects_out_of_order_frame():
     result=client.post("/v1/frames/decision",json={**base,"sequence":3},headers=headers).json()
     assert result["accept"] is False
     assert result["reason"]=="out_of_order"
+
+
+def test_session_stores_reference_image_in_worker_local_state():
+    from omnilive.models import EffectProfile, QualityProfile
+    from omnilive.reference_image import ValidatedReferenceImage
+    from omnilive.session import registry
+
+    created = registry.create(QualityProfile.BALANCED, EffectProfile.CUSTOM_ONNX, None)
+    reference = ValidatedReferenceImage(
+        jpeg_bytes=b"jpeg",
+        width=128,
+        height=96,
+        sha256="a" * 64,
+    )
+    assert registry.set_reference_image(created.session_id, reference) is True
+    stored = registry.get_reference_image(created.session_id)
+    assert stored == reference

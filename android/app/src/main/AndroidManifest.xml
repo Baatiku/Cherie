@@ -13,6 +13,6 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
-        <service android:name=".stream.LiveStreamService" android:exported="false" android:foregroundServiceType="camera|microphone"/>
+        <service android:name=".stream.LiveStreamService" android:exported="false" android:foregroundServiceType="camera"/>
     </application>
 </manifest>

@@ -31,6 +31,7 @@ class WebRtcClient(
 ) {
     private val scope=CoroutineScope(SupervisorJob()+Dispatchers.IO)
     private val egl=EglBase.create()
+    private val eglContext=eglContext.also { SharedEglContextRegistry.publish(it) }
     private val connectivity=context.getSystemService(ConnectivityManager::class.java)
     private val httpClient=OkHttpClient.Builder().pingInterval(20,TimeUnit.SECONDS).build()
     private lateinit var factory:PeerConnectionFactory
@@ -97,7 +98,7 @@ class WebRtcClient(
     ):SurfaceFrameOutput {
         check(!stopped.get()) { "WebRtcClient is stopped" }
         val output=SurfaceFrameOutput(
-            sharedContext=egl.eglBaseContext,
+            sharedContext=eglContext,
             onSwapBuffers=onSwapBuffers
         )
         output.attach(surface,mirror)
@@ -206,8 +207,8 @@ class WebRtcClient(
                 PeerConnectionFactory.InitializationOptions.builder(context).createInitializationOptions()
             )
             factory=PeerConnectionFactory.builder()
-                .setVideoEncoderFactory(DefaultVideoEncoderFactory(egl.eglBaseContext,true,true))
-                .setVideoDecoderFactory(DefaultVideoDecoderFactory(egl.eglBaseContext))
+                .setVideoEncoderFactory(DefaultVideoEncoderFactory(eglContext,true,true))
+                .setVideoDecoderFactory(DefaultVideoDecoderFactory(eglContext))
                 .createPeerConnectionFactory()
         }
         if(capturer==null) {
@@ -215,7 +216,7 @@ class WebRtcClient(
             val cameraName=enumerator.deviceNames.firstOrNull { enumerator.isFrontFacing(it) }
                 ?: error("No front camera")
             capturer=enumerator.createCapturer(cameraName,null)
-            val helper=SurfaceTextureHelper.create("OmniLiveCapture",egl.eglBaseContext)
+            val helper=SurfaceTextureHelper.create("OmniLiveCapture",eglContext)
             val source=factory.createVideoSource(false)
             capturer!!.initialize(helper,context,source.capturerObserver)
             val p=QualityProfile.fromName(activeProfileName)
@@ -692,6 +693,7 @@ class WebRtcClient(
         if(::factory.isInitialized) factory.dispose()
         httpClient.connectionPool.evictAll()
         httpClient.dispatcher.executorService.shutdown()
+        SharedEglContextRegistry.clear(eglContext)
         egl.release()
         scope.cancel()
         LiveTelemetry.reset()

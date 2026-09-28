@@ -64,7 +64,7 @@ class MainActivity:ComponentActivity() {
                             referencePickerStatus="Preparing reference image…"
                             try {
                                 val imported=withContext(Dispatchers.IO) {
-                                    ReferenceImageStore.import(this@MainActivity,uri)
+                                    ReferenceImageStore.importImage(this@MainActivity,uri)
                                 }
                                 referencePath=imported.path
                                 prefs.edit().putString("reference_image_path",imported.path).apply()

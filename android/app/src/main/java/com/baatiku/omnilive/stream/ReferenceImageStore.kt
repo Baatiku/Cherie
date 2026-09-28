@@ -39,7 +39,7 @@ object ReferenceImageStore {
     private const val JPEG_QUALITY=88
     private const val FILE_NAME="reference_image.jpg"
 
-    fun import(context:Context,uri:Uri):ImportedReferenceImage {
+    fun importImage(context:Context,uri:Uri):ImportedReferenceImage {
         val resolver=context.contentResolver
         val bounds=BitmapFactory.Options().apply { inJustDecodeBounds=true }
         resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it,null,bounds) }

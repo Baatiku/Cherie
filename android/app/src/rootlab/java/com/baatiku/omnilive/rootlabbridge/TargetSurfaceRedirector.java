@@ -36,8 +36,13 @@ final class TargetSurfaceRedirector {
     private static final Set<Surface> UNSAFE_TARGETS =
         Collections.newSetFromMap(new IdentityHashMap<>());
 
+    private static final int SESSION_UNKNOWN = 0;
+    private static final int SESSION_PHYSICAL = 1;
+    private static final int SESSION_REDIRECTED = 2;
+
     private static HandlerThread drainThread;
     private static Handler drainHandler;
+    private static int sessionMode = SESSION_UNKNOWN;
 
     private TargetSurfaceRedirector() {}
 
@@ -98,6 +103,28 @@ final class TargetSurfaceRedirector {
         return null;
     }
 
+    static synchronized boolean hasPreparedMappings() {
+        return !REPLACEMENTS.isEmpty();
+    }
+
+    static synchronized boolean isPhysicalSessionLocked() {
+        return sessionMode == SESSION_PHYSICAL;
+    }
+
+    static synchronized boolean isRedirectedSessionLocked() {
+        return sessionMode == SESSION_REDIRECTED;
+    }
+
+    static synchronized void markPhysicalSession() {
+        sessionMode = SESSION_PHYSICAL;
+        Log.i(TAG, "Camera2 session mode locked to physical");
+    }
+
+    static synchronized void markRedirectedSession() {
+        sessionMode = SESSION_REDIRECTED;
+        Log.i(TAG, "Camera2 session mode locked to OmniLive redirect");
+    }
+
     static synchronized Object[] substituteSessionMethodArgs(Object[] args) {
         if (args == null || args.length == 0) return null;
         Object[] next = null;
@@ -148,6 +175,10 @@ final class TargetSurfaceRedirector {
         if (original == null) return null;
         Replacement replacement = REPLACEMENTS.get(original);
         if (replacement == null && create) {
+            if (sessionMode == SESSION_PHYSICAL) {
+                Log.i(TAG, "target mapping suppressed for physical Camera2 session");
+                return original;
+            }
             try {
                 replacement = ensureReplacement(original);
             } catch (Throwable t) {
@@ -177,6 +208,7 @@ final class TargetSurfaceRedirector {
         REPLACEMENTS.clear();
         CONFIG_REPLACEMENTS.clear();
         UNSAFE_TARGETS.clear();
+        sessionMode = SESSION_UNKNOWN;
         Log.i(TAG, "target surface redirector reset");
     }
 

@@ -36,7 +36,7 @@ class WebRtcClient(
 
     fun start() {
         stopped.set(false)
-        LiveTelemetry.update { it.copy(activeProfile=activeProfileName) }
+        LiveTelemetry.update { it.copy(activeProfile=activeProfileName,activeEffect=effectName) }
         connect()
     }
 
@@ -105,8 +105,18 @@ class WebRtcClient(
                 if(backendPollCounter>=3) {
                     backendPollCounter=0
                     try {
-                        backendP95Ms=SessionApi.telemetry(baseUrl).processorP95Ms
-                        LiveTelemetry.update { it.copy(backendProcessorP95Ms=backendP95Ms) }
+                        val backend=SessionApi.telemetry(baseUrl)
+                        backendP95Ms=backend.processorP95Ms
+                        LiveTelemetry.update {
+                            it.copy(
+                                backendProcessorP95Ms=backend.processorP95Ms,
+                                backendDetectorP95Ms=backend.detectorP95Ms,
+                                backendModelP95Ms=backend.modelP95Ms,
+                                targetNeuralFps=backend.targetNeuralFps,
+                                droppedInferenceFrames=backend.droppedInferenceFrames,
+                                inputOverwrittenFrames=backend.inputOverwrittenFrames
+                            )
+                        }
                     } catch(_:Throwable) {}
                 }
             }

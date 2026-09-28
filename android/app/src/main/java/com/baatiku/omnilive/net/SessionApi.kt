@@ -6,7 +6,14 @@ import java.net.URL
 
 data class LiveSession(val sessionId:String,val token:String,val expiresAt:Long)
 data class IceServerConfig(val urls:List<String>,val username:String,val credential:String)
-data class BackendTelemetry(val processorP95Ms:Long)
+data class BackendTelemetry(
+    val processorP95Ms:Long,
+    val detectorP95Ms:Long,
+    val modelP95Ms:Long,
+    val targetNeuralFps:Double,
+    val droppedInferenceFrames:Long,
+    val inputOverwrittenFrames:Long
+)
 
 object SessionApi {
     private fun connection(url:String,method:String):HttpURLConnection {
@@ -44,7 +51,14 @@ object SessionApi {
         val conn=connection(baseUrl.trimEnd('/')+"/v1/telemetry","GET")
         check(conn.responseCode in 200..299) { "Telemetry failed: "+conn.responseCode }
         val json=JSONObject(conn.inputStream.bufferedReader().use { it.readText() })
-        return BackendTelemetry(json.optDouble("processor_p95_ms",0.0).toLong())
+        return BackendTelemetry(
+            processorP95Ms=json.optDouble("processor_p95_ms",0.0).toLong(),
+            detectorP95Ms=json.optDouble("detector_p95_ms",0.0).toLong(),
+            modelP95Ms=json.optDouble("model_p95_ms",0.0).toLong(),
+            targetNeuralFps=json.optDouble("target_neural_fps",0.0),
+            droppedInferenceFrames=json.optLong("dropped_inference_frames",0L),
+            inputOverwrittenFrames=json.optLong("input_overwritten_frames",0L)
+        )
     }
 
     fun exchangeOffer(baseUrl:String,session:LiveSession,sdp:String):Pair<String,String> {

@@ -81,13 +81,25 @@ class MainActivity:ComponentActivity() {
                             running=!running
                         }) { Text(if(running) "Stop live session" else "Start live session") }
 
-                        Text("Connection: "+telemetry.connectionState)
-                        Text("ICE: "+telemetry.iceState)
-                        Text("Adaptive profile: "+telemetry.activeProfile)
-                        Text("RTT: "+(telemetry.rttMs?.toString() ?: "—")+" ms")
-                        Text("Backend p95: "+(telemetry.backendProcessorP95Ms?.toString() ?: "—")+" ms")
-                        Text("Packet loss: "+(telemetry.packetLoss?.let { String.format(Locale.US,"%.1f%%",it*100) } ?: "—"))
-                        Text("Frames received: "+(telemetry.framesReceived?.toString() ?: "—"))
+                        Text("Connection: "+telemetry.connectionState+" · ICE: "+telemetry.iceState)
+                        Text("Quality: "+telemetry.activeProfile+" · Effect: "+telemetry.activeEffect)
+                        Text(
+                            "RTT: "+(telemetry.rttMs?.toString() ?: "—")+" ms · Loss: "+
+                                (telemetry.packetLoss?.let { String.format(Locale.US,"%.1f%%",it*100) } ?: "—")
+                        )
+                        Text(
+                            "Backend p95: "+(telemetry.backendProcessorP95Ms?.toString() ?: "—")+" ms · Model: "+
+                                (telemetry.backendModelP95Ms?.toString() ?: "—")+" ms"
+                        )
+                        Text(
+                            "Detect p95: "+(telemetry.backendDetectorP95Ms?.toString() ?: "—")+" ms · Neural: "+
+                                (telemetry.targetNeuralFps?.let { String.format(Locale.US,"%.1f fps",it) } ?: "—")
+                        )
+                        Text(
+                            "Frames: "+(telemetry.framesReceived?.toString() ?: "—")+" · Inference skips: "+
+                                (telemetry.droppedInferenceFrames?.toString() ?: "—")+" · Input drops: "+
+                                (telemetry.inputOverwrittenFrames?.toString() ?: "—")
+                        )
                         telemetry.lastError?.let { Text("Status: "+it,color=MaterialTheme.colorScheme.error) }
                     }
                 }

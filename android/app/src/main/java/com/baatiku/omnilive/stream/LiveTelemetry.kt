@@ -8,11 +8,17 @@ data class LiveTelemetryState(
     val connectionState:String="idle",
     val iceState:String="new",
     val activeProfile:String="balanced",
+    val activeEffect:String="original",
     val rttMs:Long?=null,
     val packetLoss:Double?=null,
     val packetsLost:Long?=null,
     val framesReceived:Long?=null,
     val backendProcessorP95Ms:Long?=null,
+    val backendDetectorP95Ms:Long?=null,
+    val backendModelP95Ms:Long?=null,
+    val targetNeuralFps:Double?=null,
+    val droppedInferenceFrames:Long?=null,
+    val inputOverwrittenFrames:Long?=null,
     val lastError:String?=null
 )
 

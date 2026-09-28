@@ -1,14 +1,14 @@
 package com.baatiku.omnicam.xposed;
 
 import android.media.MediaCodec;
+import android.net.LocalSocket;
+import android.net.LocalSocketAddress;
 import android.media.MediaFormat;
 import android.util.Log;
 import android.view.Surface;
 
 import java.io.BufferedInputStream;
 import java.io.DataInputStream;
-import java.net.InetSocketAddress;
-import java.net.Socket;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
@@ -19,7 +19,7 @@ final class LocalH264Decoder implements AutoCloseable {
     private final Surface output;
     private volatile boolean running = true;
     private volatile MediaCodec decoder;
-    private volatile Socket socket;
+    private volatile LocalSocket socket;
 
     LocalH264Decoder(Surface output) {
         this.output = output;
@@ -36,11 +36,12 @@ final class LocalH264Decoder implements AutoCloseable {
 
         while (running) {
             try {
-                socket = new Socket();
+                socket = new LocalSocket();
                 socket.connect(
-                        new InetSocketAddress("127.0.0.1", 7878),
-                        1000);
-                socket.setTcpNoDelay(true);
+                        new LocalSocketAddress(
+                                "omnicam-live",
+                                LocalSocketAddress.Namespace.ABSTRACT));
+                socket.setReceiveBufferSize(256 * 1024);
 
                 DataInputStream in = new DataInputStream(
                         new BufferedInputStream(

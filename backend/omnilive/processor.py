@@ -36,6 +36,21 @@ from .vision import (
 )
 
 
+@dataclass
+class ProcessingTrace:
+    total_ms: float = 0.0
+    model_ms: float | None = None
+    model_input_width: int = 0
+    model_input_height: int = 0
+    inference_attempted: bool = False
+    inference_succeeded: bool = False
+    inference_error: bool = False
+    target_neural_fps: float = 0.0
+    detector_interval: int = 0
+    crop_max_side: int = 0
+    overload_events: int = 0
+
+
 class VisualProcessor:
     def process_rgb(self, rgb: np.ndarray, effect: EffectProfile) -> np.ndarray:
         if effect == EffectProfile.ORIGINAL:
@@ -301,6 +316,8 @@ class LocalizedTemporalProcessor:
         profile: QualityProfile,
         force_region: Region | None = None,
         force_inference: bool = False,
+        crop_max_side_override: int | None = None,
+        trace: ProcessingTrace | None = None,
     ) -> np.ndarray:
         h, w = rgb.shape[:2]
         profile_name = self._effective_profile(profile, w)
@@ -311,6 +328,13 @@ class LocalizedTemporalProcessor:
             self._prune_contexts(now)
         budget = context.budget
         assert budget is not None
+        if crop_max_side_override is not None:
+            budget.crop_max_side = max(64, min(1024, int(crop_max_side_override)))
+        if trace is not None:
+            trace.target_neural_fps = float(budget.target_neural_fps)
+            trace.detector_interval = int(budget.detector_interval)
+            trace.crop_max_side = int(budget.crop_max_side)
+            trace.overload_events = int(budget.overload_events)
 
         tracked: Region | None = None
         if force_region is not None:
@@ -410,12 +434,19 @@ class LocalizedTemporalProcessor:
             aligned = align_face(rgb, context.semantic_landmarks, settings.face_alignment_size)
         source_for_model = aligned.image if aligned is not None else crop
         model_input, original_size = self._resize_for_budget(source_for_model, budget.crop_max_side)
+        if trace is not None:
+            trace.inference_attempted = True
+            trace.model_input_height = int(model_input.shape[0])
+            trace.model_input_width = int(model_input.shape[1])
         model_started = time.perf_counter()
         overload_before = budget.overload_events
         try:
             transformed = self.visual.process_rgb(model_input, effect)
             model_ms = (time.perf_counter() - model_started) * 1000.0
             model_window.add(model_ms)
+            if trace is not None:
+                trace.model_ms = model_ms
+                trace.inference_succeeded = True
             budget.observe_inference(model_ms)
             if budget.overload_events > overload_before:
                 overload_event_counter.increment(budget.overload_events - overload_before)
@@ -429,12 +460,20 @@ class LocalizedTemporalProcessor:
             context.cached_at = now
         except Exception:
             inference_error_counter.increment()
+            if trace is not None:
+                trace.model_ms = (time.perf_counter() - model_started) * 1000.0
+                trace.inference_error = True
             if not self._cached_is_valid(context, now):
                 return rgb
             transformed = context.cached_transform
             assert transformed is not None
             cache_reuse_counter.increment()
 
+        if trace is not None:
+            trace.target_neural_fps = float(budget.target_neural_fps)
+            trace.detector_interval = int(budget.detector_interval)
+            trace.crop_max_side = int(budget.crop_max_side)
+            trace.overload_events = int(budget.overload_events)
         pipeline_health.update(
             processed_region_width=region.width,
             processed_region_height=region.height,
@@ -465,6 +504,8 @@ class TimedProcessor:
         profile: QualityProfile = QualityProfile.BALANCED,
         force_region: Region | None = None,
         force_inference: bool = False,
+        crop_max_side_override: int | None = None,
+        trace: ProcessingTrace | None = None,
     ) -> VideoFrame:
         started = time.perf_counter()
         try:
@@ -480,10 +521,15 @@ class TimedProcessor:
                 profile,
                 force_region=force_region,
                 force_inference=force_inference,
+                crop_max_side_override=crop_max_side_override,
+                trace=trace,
             )
             return _video_frame(out, frame)
         finally:
-            processor_window.add((time.perf_counter() - started) * 1000.0)
+            total_ms = (time.perf_counter() - started) * 1000.0
+            processor_window.add(total_ms)
+            if trace is not None:
+                trace.total_ms = total_ms
 
     def release_stream(self, stream_key: str) -> None:
         self.localized.release_stream(stream_key)

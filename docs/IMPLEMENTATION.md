@@ -64,7 +64,7 @@
 - [x] per-stage detector/tracker/model/compositor/total timing
 - [x] dropped-inference, stale-input overwrite, cache-reuse, reset, and error counters
 - [x] GPU-capable SCRFD face detector adapter with lazy ONNX loading and Haar fallback
-- [ ] person detector adapter (configurable model path is reserved)
+- [x] lazy YOLO-style ONNX person detector adapter with letterboxing/NMS and common export parsing
 - [x] semantic facial-landmark adapter and optional aligned localized inference
 - [x] fixed-crop + overload-adaptation benchmark harness using the live processor path
 - [ ] real custom model loaded from Modal Volume
@@ -72,15 +72,16 @@
 
 ## Phase 4 — rooted Android lab adapter
 - [x] generic ProcessedFrameOutput boundary below ReturnedVideoBus
-- [ ] local processed-frame Surface/buffer producer
+- [x] GPU-friendly local processed-frame Surface producer with size-1 pending-frame renderer
 - [ ] isolated rooted adapter module
 - [ ] package-scoped compatibility testing
 - [ ] camera lifecycle recovery/fallback
 
-The rooted lab phase remains isolated from transport/model code. The generic output boundary is now ready for a Surface producer, but no root-specific code has been mixed into normal OmniLive.
+The rooted lab phase remains isolated from transport/model code. The generic output boundary and Surface producer are now ready for an isolated lab adapter, but no root-specific code has been mixed into normal OmniLive.
 
 ## Phase 5 — hardening
-- [ ] thermal/battery handling
+- [x] Android battery/charging/temperature and thermal-state telemetry
+- [ ] measured thermal-driven quality policy
 - [ ] GPU worker retry/reallocation
 - [ ] metrics dashboard/export
 - [ ] 30-minute end-to-end soak test

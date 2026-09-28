@@ -20,7 +20,7 @@ Android Camera2
   -> ReturnedVideoBus compatibility facade
   -> ProcessedFrameOutput
        -> normal preview renderer
-       -> future local Surface output
+       -> local SurfaceFrameOutput
        -> future isolated rooted lab adapter
 ```
 
@@ -50,7 +50,7 @@ It provides:
 - per-consumer frame retain/release isolation
 - failure isolation so an optional output cannot break the normal preview
 
-No root code, target-app logic, or conferencing-specific behavior belongs in this layer. A future Surface producer and rooted lab adapter consume this boundary instead of entering WebRTC transport code.
+No root code, target-app logic, or conferencing-specific behavior belongs in this layer. `SurfaceFrameOutput` now consumes this boundary with the same WebRTC EGL context and a size-1 pending frame. A future rooted lab adapter can consume that Surface/output boundary without entering WebRTC transport code.
 
 ## ICE and TURN
 

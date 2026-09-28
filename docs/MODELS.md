@@ -83,13 +83,16 @@ When face alignment is enabled for `custom_onnx`, OmniLive:
 
 No full-frame neural inference is introduced.
 
-A future person detector has a reserved configurable path:
+The person detector provider uses a separately configured ONNX model:
 
 ```text
+OMNILIVE_PERSON_DETECTOR_BACKEND=auto
 OMNILIVE_PERSON_DETECTOR_MODEL=detectors/person_yolo.onnx
+OMNILIVE_PERSON_DETECTOR_CONFIDENCE=0.40
+OMNILIVE_PERSON_DETECTOR_NMS=0.45
 ```
 
-The person detector loader itself remains future work.
+It supports common Ultralytics feature-first/row-first raw outputs and end-to-end `[x1,y1,x2,y2,score,class]` outputs. Preprocessing uses letterboxing and postprocessing applies person-class filtering plus NMS. The provider is lazy and does not load weights unless person detection is actually invoked.
 
 ## Localized temporal pipeline
 

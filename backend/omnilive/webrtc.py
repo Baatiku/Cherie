@@ -3,9 +3,10 @@ from __future__ import annotations
 import asyncio
 import time
 
-from aiortc import MediaStreamTrack, RTCPeerConnection, RTCSessionDescription
+from aiortc import MediaStreamTrack, RTCConfiguration, RTCIceServer, RTCPeerConnection, RTCSessionDescription
 from aiortc.mediastreams import MediaStreamError
 
+from .ice import current_ice_config
 from .models import WebRtcAnswer, WebRtcOffer
 from .processor import processor
 from .session import registry
@@ -89,12 +90,26 @@ class LowLatencyVideoTrack(MediaStreamTrack):
         super().stop()
 
 
+def peer_configuration() -> RTCConfiguration:
+    config = current_ice_config()
+    return RTCConfiguration(
+        iceServers=[
+            RTCIceServer(
+                urls=server.urls,
+                username=server.username or None,
+                credential=server.credential or None,
+            )
+            for server in config.servers
+        ]
+    )
+
+
 async def accept_offer(body: WebRtcOffer) -> WebRtcAnswer:
     state = registry.authenticate(body.session_id, body.token)
     if state is None:
         raise PermissionError("invalid or expired session")
 
-    pc = RTCPeerConnection()
+    pc = RTCPeerConnection(configuration=peer_configuration())
     _peers.add(pc)
     returned_track: LowLatencyVideoTrack | None = None
 

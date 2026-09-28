@@ -7,6 +7,7 @@ import kotlinx.coroutines.flow.asStateFlow
 data class LiveTelemetryState(
     val connectionState:String="idle",
     val iceState:String="new",
+    val networkState:String="unknown",
     val activeProfile:String="balanced",
     val activeEffect:String="original",
     val rttMs:Long?=null,

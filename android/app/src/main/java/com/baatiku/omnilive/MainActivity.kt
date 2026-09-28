@@ -81,7 +81,10 @@ class MainActivity:ComponentActivity() {
                             running=!running
                         }) { Text(if(running) "Stop live session" else "Start live session") }
 
-                        Text("Connection: "+telemetry.connectionState+" · ICE: "+telemetry.iceState)
+                        Text(
+                            "Connection: "+telemetry.connectionState+" · ICE: "+telemetry.iceState+
+                                " · Network: "+telemetry.networkState
+                        )
                         Text("Quality: "+telemetry.activeProfile+" · Effect: "+telemetry.activeEffect)
                         Text(
                             "RTT: "+(telemetry.rttMs?.toString() ?: "—")+" ms · Loss: "+

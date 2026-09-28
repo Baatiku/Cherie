@@ -1,6 +1,9 @@
 package com.baatiku.omnilive.stream
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
 import com.baatiku.omnilive.net.LiveSession
 import com.baatiku.omnilive.net.SessionApi
 import kotlinx.coroutines.*
@@ -17,6 +20,7 @@ class WebRtcClient(
 ) {
     private val scope=CoroutineScope(SupervisorJob()+Dispatchers.IO)
     private val egl=EglBase.create()
+    private val connectivity=context.getSystemService(ConnectivityManager::class.java)
     private lateinit var factory:PeerConnectionFactory
     private var capturer:CameraVideoCapturer?=null
     private var localTrack:VideoTrack?=null
@@ -26,23 +30,62 @@ class WebRtcClient(
     private var iceServers:List<PeerConnection.IceServer> = emptyList()
     private var statsJob:Job?=null
     private var reconnectJob:Job?=null
+    private var connectJob:Job?=null
     private var reconnectAttempts=0
     private val stopped=AtomicBoolean(false)
     private val quality=AdaptiveQualityController(initialProfileName)
     private var activeProfileName=initialProfileName
     private var previousLost:Long?=null
     private var previousReceived:Long?=null
+    private var currentNetwork:Network?=null
+    private var networkCallbackRegistered=false
     @Volatile private var backendP95Ms:Long=0
+
+    private val networkCallback=object:ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network:Network) {
+            val previous=currentNetwork
+            currentNetwork=network
+            LiveTelemetry.update { it.copy(networkState="available") }
+            if(previous!=null && previous!=network && !stopped.get()) {
+                reconnectForNetworkChange()
+            }
+        }
+
+        override fun onLost(network:Network) {
+            if(currentNetwork==network) {
+                currentNetwork=null
+                LiveTelemetry.update { it.copy(networkState="offline") }
+                scheduleReconnect()
+            }
+        }
+
+        override fun onCapabilitiesChanged(network:Network,capabilities:NetworkCapabilities) {
+            if(network!=currentNetwork) return
+            val label=when {
+                capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "wifi"
+                capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "cellular"
+                capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> "ethernet"
+                else -> "available"
+            }
+            LiveTelemetry.update { it.copy(networkState=label) }
+        }
+    }
 
     fun start() {
         stopped.set(false)
         LiveTelemetry.update { it.copy(activeProfile=activeProfileName,activeEffect=effectName) }
+        if(!networkCallbackRegistered) {
+            connectivity.registerDefaultNetworkCallback(networkCallback)
+            networkCallbackRegistered=true
+        }
         connect()
     }
 
     private fun connect() {
+        if(stopped.get()) return
+        connectJob?.cancel()
         LiveTelemetry.update { it.copy(connectionState="starting",lastError=null) }
-        scope.launch {
+        connectJob=scope.launch {
             try {
                 session=SessionApi.create(baseUrl,activeProfileName,effectName)
                 iceServers=SessionApi.iceServers(baseUrl).map { cfg ->
@@ -53,9 +96,20 @@ class WebRtcClient(
                 }
                 withContext(Dispatchers.Main) { startPeer() }
             } catch(t:Throwable) {
+                if(t is CancellationException) throw t
                 fail(t.message ?: t.javaClass.simpleName)
             }
         }
+    }
+
+    private fun reconnectForNetworkChange() {
+        reconnectJob?.cancel()
+        reconnectJob=null
+        reconnectAttempts=0
+        previousLost=null
+        previousReceived=null
+        LiveTelemetry.update { it.copy(connectionState="network_switch",lastError=null) }
+        connect()
     }
 
     private fun ensureFactoryAndCapture() {
@@ -83,8 +137,11 @@ class WebRtcClient(
     }
 
     private fun startPeer() {
+        if(stopped.get()) return
         ensureFactoryAndCapture()
         localDescriptionReady=false
+        previousLost=null
+        previousReceived=null
         peer?.close()
         peer=createPeer()
         peer!!.addTrack(localTrack!!,listOf("omnilive"))
@@ -132,6 +189,7 @@ class WebRtcClient(
     }
 
     private fun fail(message:String) {
+        if(stopped.get()) return
         LiveTelemetry.update { it.copy(connectionState="failed",lastError=message) }
         scheduleReconnect()
     }
@@ -246,8 +304,14 @@ class WebRtcClient(
 
     fun stop() {
         stopped.set(true)
+        connectJob?.cancel()
         reconnectJob?.cancel()
         statsJob?.cancel()
+        if(networkCallbackRegistered) {
+            try { connectivity.unregisterNetworkCallback(networkCallback) } catch(_:Throwable) {}
+            networkCallbackRegistered=false
+        }
+        currentNetwork=null
         try { capturer?.stopCapture() } catch(_:InterruptedException) {}
         capturer?.dispose()
         capturer=null

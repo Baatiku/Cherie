@@ -95,13 +95,23 @@ The rooted lab phase remains isolated from transport/model code. The generic out
 - [ ] repeated Wi-Fi/cellular handoff test
 - [ ] production TURN failover test
 
+## Current build/install checkpoint
+
+- [x] private-repo Render Free build executor connected directly to `Baatiku/Cherie:main`
+- [x] AndroidX enabled for the Android project
+- [x] OkHttp pinned to a compileSdk 35-compatible release
+- [x] Java/Kotlin JVM targets aligned to Java 17 in app and rootlab modules
+- [x] JUnit configured for app and rootlab unit tests
+- [x] Render build passed `:app:testDebugUnitTest :rootlab:testDebugUnitTest :app:assembleDebug`
+- [x] install-test APK generated as `omnilive-debug.apk`
+- [x] generated APK SHA-256: `a6c6af3343548d25c774d7a3ca17b5e39cb3babf88b538b6a6742cce1e3455b5`
+
 ## Current external gates
 
-The core source implementation can continue without external assets, but install/live validation now requires:
-1. an Android build executor: the repo has GitHub artifact workflows plus `ops/apk-builder.Dockerfile`, but the current private-repo GitHub jobs are failing before runner steps execute
+The core source implementation can continue without external assets. Remaining live validation requires:
+1. installation and launch testing of the generated debug APK on a real Android device
 2. a Modal `omnilive-runtime` Secret and a deployed endpoint from current main
 3. a reachable TURN service or managed TURN credentials for relay benchmarking
-4. a real Android test device
-5. a real ONNX model in the `omnilive-models` Volume for custom-model benchmarks
+4. a real ONNX model in the `omnilive-models` Volume for custom-model benchmarks
 
 For reference-aware models, `OMNILIVE_MODEL_ADAPTER=dual_image` supports exactly two 4D image inputs. Models requiring embeddings, masks or latent inputs need a dedicated adapter.

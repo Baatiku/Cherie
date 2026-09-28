@@ -46,6 +46,21 @@ Add TURN values to the same secret when the relay is ready. Update the named sec
 
 Optional values stored in `omnilive-runtime`.
 
+For visual detector / landmark selection:
+
+```text
+OMNILIVE_MODEL_ID
+OMNILIVE_DETECTOR_BACKEND=auto
+OMNILIVE_FACE_DETECTOR_MODEL=detectors/scrfd_2.5g.onnx
+OMNILIVE_FACE_DETECTOR_CONFIDENCE=0.50
+OMNILIVE_FACE_DETECTOR_NMS=0.40
+OMNILIVE_LANDMARK_BACKEND=auto
+OMNILIVE_FACE_LANDMARK_MODEL=landmarks/face_landmark_5.onnx
+OMNILIVE_FACE_ALIGNMENT_ENABLED=false
+OMNILIVE_FACE_ALIGNMENT_SIZE=256
+OMNILIVE_PERSON_DETECTOR_MODEL=detectors/person_yolo.onnx
+```
+
 For static ICE credentials:
 
 ```text

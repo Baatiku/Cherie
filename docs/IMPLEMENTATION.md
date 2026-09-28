@@ -63,10 +63,12 @@
 - [x] overload-driven neural FPS, detector interval, and crop-size adaptation
 - [x] per-stage detector/tracker/model/compositor/total timing
 - [x] dropped-inference, stale-input overwrite, cache-reuse, reset, and error counters
-- [ ] production GPU detector/person detector adapter
-- [ ] semantic facial-landmark/alignment adapter for models that require it
+- [x] GPU-capable SCRFD face detector adapter with lazy ONNX loading and Haar fallback
+- [ ] person detector adapter (configurable model path is reserved)
+- [x] semantic facial-landmark adapter and optional aligned localized inference
+- [x] fixed-crop + overload-adaptation benchmark harness using the live processor path
 - [ ] real custom model loaded from Modal Volume
-- [ ] Modal L4 live-model latency benchmark
+- [ ] Modal L4 live-model latency benchmark results
 
 ## Phase 4 — rooted Android lab adapter
 - [x] generic ProcessedFrameOutput boundary below ReturnedVideoBus

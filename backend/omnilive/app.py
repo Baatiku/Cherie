@@ -25,6 +25,7 @@ from .models import (
 from .processor import ProcessingTrace, processor
 from .regions import Region
 from .session import registry
+from .temporal import profile_defaults
 from .telemetry import (
     cache_reuse_counter,
     compositor_window,
@@ -78,6 +79,8 @@ class BenchmarkMatrixRequest(BaseModel):
     warmup_frames: int = Field(default=2, ge=0, le=20)
     steady_frames: int = Field(default=30, ge=3, le=120)
     force_region: bool = True
+    include_adaptation_probe: bool = True
+    adaptation_frames: int = Field(default=24, ge=4, le=120)
 
 
 class LiveSocketStart(BaseModel):
@@ -196,6 +199,60 @@ async def _benchmark_case(
         "overload_events": last.overload_events,
         "memory_before": memory_before,
         "memory_after": memory_after,
+    }
+
+
+async def _adaptation_probe(
+    *,
+    effect: EffectProfile,
+    profile: QualityProfile,
+    width: int,
+    height: int,
+    frames: int,
+    force_region: bool,
+) -> dict:
+    sample = np.zeros((height, width, 3), dtype=np.uint8)
+    sample[::8, :, :] = 96
+    sample[:, ::8, :] = 160
+    stream_key = "benchmark-adapt-" + uuid.uuid4().hex
+    forced = Region(0, 0, width, height) if force_region else None
+    defaults = profile_defaults(profile.value)
+    traces: list[ProcessingTrace] = []
+
+    try:
+        for _ in range(frames):
+            trace = ProcessingTrace()
+            frame = VideoFrame.from_ndarray(sample, format="rgb24")
+            await processor.process(
+                frame,
+                effect,
+                stream_key=stream_key,
+                profile=profile,
+                force_region=forced,
+                force_inference=True,
+                trace=trace,
+            )
+            traces.append(trace)
+    finally:
+        processor.release_stream(stream_key)
+
+    final = traces[-1]
+    model_values = [trace.model_ms for trace in traces if trace.model_ms is not None]
+    return {
+        "profile": profile.value,
+        "frames": frames,
+        "initial_target_neural_fps": defaults.neural_fps,
+        "initial_detector_interval": defaults.detector_interval,
+        "initial_crop_max_side": defaults.crop_max_side,
+        "final_target_neural_fps": round(final.target_neural_fps, 2),
+        "final_detector_interval": final.detector_interval,
+        "final_crop_max_side": final.crop_max_side,
+        "overload_events": final.overload_events,
+        "model_p95_ms": round(_percentile(model_values, 0.95), 3),
+        "inference_errors": sum(1 for trace in traces if trace.inference_error),
+        "shed_neural_fps": final.target_neural_fps < defaults.neural_fps,
+        "shed_detector_cadence": final.detector_interval > defaults.detector_interval,
+        "shed_crop": final.crop_max_side < defaults.crop_max_side,
     }
 
 
@@ -458,6 +515,19 @@ async def benchmark_matrix(body: BenchmarkMatrixRequest):
                     force_region=body.force_region,
                 )
             )
+    adaptation = []
+    if body.include_adaptation_probe:
+        for profile in body.profiles:
+            adaptation.append(
+                await _adaptation_probe(
+                    effect=body.effect,
+                    profile=profile,
+                    width=body.width,
+                    height=body.height,
+                    frames=body.adaptation_frames,
+                    force_region=body.force_region,
+                )
+            )
     return {
         "effect": body.effect.value,
         "profiles": [profile.value for profile in body.profiles],
@@ -468,6 +538,7 @@ async def benchmark_matrix(body: BenchmarkMatrixRequest):
         "vision": processor.vision_status(),
         "memory": runtime.memory_status(),
         "cases": cases,
+        "adaptation": adaptation,
     }
 
 

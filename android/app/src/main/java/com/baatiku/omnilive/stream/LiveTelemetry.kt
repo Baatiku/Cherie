@@ -20,6 +20,12 @@ data class LiveTelemetryState(
     val targetNeuralFps:Double?=null,
     val droppedInferenceFrames:Long?=null,
     val inputOverwrittenFrames:Long?=null,
+    val frameLatencyP50Ms:Long?=null,
+    val frameLatencyP95Ms:Long?=null,
+    val frameLatencySamples:Long=0,
+    val frameCorrelationMisses:Long=0,
+    val frameCorrelationOutOfOrder:Long=0,
+    val backendFrameTotalMs:Long?=null,
     val lastError:String?=null
 )
 

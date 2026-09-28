@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
+import android.os.SystemClock
 import com.baatiku.omnilive.net.LiveSession
 import com.baatiku.omnilive.net.SessionApi
 import kotlinx.coroutines.*
@@ -50,6 +51,36 @@ class WebRtcClient(
     private var hasSeenNetwork=false
     private var networkCallbackRegistered=false
     @Volatile private var backendP95Ms:Long=0
+    @Volatile private var frameMarksEnabled=false
+    private val frameLatency=FrameLatencyTracker()
+
+    private val captureTimingSink=object:VideoSink {
+        override fun onFrame(frame:VideoFrame) {
+            if(!frameMarksEnabled || stopped.get()) return
+            val socket=liveSocket ?: return
+            val mark=frameLatency.newCapture(frame.timestampNs,SystemClock.elapsedRealtimeNanos())
+            socket.send(
+                JSONObject()
+                    .put("action","frame_mark")
+                    .put("sequence",mark.sequence)
+                    .put("capture_timestamp_ns",mark.captureTimestampNs)
+                    .put("capture_elapsed_ns",mark.captureElapsedNs)
+                    .put("rtp_timestamp",mark.rtpGuess)
+                    .toString()
+            )
+        }
+    }
+
+    private val returnedTimingSink=object:VideoSink {
+        override fun onFrame(frame:VideoFrame) {
+            if(frameMarksEnabled) {
+                frameLatency.onReturnedFrame(frame.timestampNs,SystemClock.elapsedRealtimeNanos())?.let {
+                    applyFrameLatency(it)
+                }
+            }
+            remoteSink.onFrame(frame)
+        }
+    }
 
     private val networkCallback=object:ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network:Network) {
@@ -94,8 +125,21 @@ class WebRtcClient(
     private fun connect() {
         if(stopped.get()) return
         connectJob?.cancel()
+        frameMarksEnabled=false
+        frameLatency.reset()
         closeLiveSocket("reconnect")
-        LiveTelemetry.update { it.copy(connectionState="starting",lastError=null) }
+        LiveTelemetry.update {
+            it.copy(
+                connectionState="starting",
+                frameLatencyP50Ms=null,
+                frameLatencyP95Ms=null,
+                frameLatencySamples=0,
+                frameCorrelationMisses=0,
+                frameCorrelationOutOfOrder=0,
+                backendFrameTotalMs=null,
+                lastError=null
+            )
+        }
         connectJob=scope.launch {
             try {
                 session=null
@@ -144,6 +188,7 @@ class WebRtcClient(
             val p=QualityProfile.fromName(activeProfileName)
             capturer!!.startCapture(p.width,p.height,p.cameraFps)
             localTrack=factory.createVideoTrack("omnilive-camera",source)
+            localTrack!!.addSink(captureTimingSink)
         }
     }
 
@@ -181,6 +226,19 @@ class WebRtcClient(
             else -> "ws://"+base
         }
         return websocketBase+"/v1/live"
+    }
+
+    private fun applyFrameLatency(snapshot:FrameLatencySnapshot) {
+        LiveTelemetry.update {
+            it.copy(
+                frameLatencyP50Ms=snapshot.p50Ms,
+                frameLatencyP95Ms=snapshot.p95Ms,
+                frameLatencySamples=snapshot.samples,
+                frameCorrelationMisses=snapshot.misses,
+                frameCorrelationOutOfOrder=snapshot.outOfOrder,
+                backendFrameTotalMs=snapshot.backendTotalMs
+            )
+        }
     }
 
     private fun applyBackendTelemetry(backend:com.baatiku.omnilive.net.BackendTelemetry) {
@@ -230,6 +288,7 @@ class WebRtcClient(
                             )
                             val answerSdp=json.getString("sdp")
                             val answerType=json.optString("type","answer")
+                            frameMarksEnabled=true
                             scope.launch(Dispatchers.Main) {
                                 peer?.setRemoteDescription(object:SimpleSdpObserver(){
                                     override fun onSetFailure(error:String) { fail(error) }
@@ -239,6 +298,17 @@ class WebRtcClient(
                         "telemetry","pong" -> {
                             json.optJSONObject("telemetry")?.let {
                                 applyBackendTelemetry(SessionApi.parseTelemetry(it))
+                            }
+                        }
+                        "frame_timing" -> {
+                            val report=FrameTimingReport(
+                                sequence=json.getLong("sequence"),
+                                rtpTimestamp=json.getLong("rtp_timestamp"),
+                                backendTotalMs=json.optDouble("backend_total_ms",0.0),
+                                backendProcessorMs=json.optDouble("backend_processor_ms",0.0)
+                            )
+                            frameLatency.onTimingReport(report,SystemClock.elapsedRealtimeNanos())?.let {
+                                applyFrameLatency(it)
                             }
                         }
                         "profile" -> {
@@ -270,6 +340,7 @@ class WebRtcClient(
     }
 
     private fun closeLiveSocket(reason:String) {
+        frameMarksEnabled=false
         val socket=liveSocket ?: return
         liveSocket=null
         try { socket.send(JSONObject().put("action","stop").toString()) } catch(_:Throwable) {}
@@ -387,12 +458,13 @@ class WebRtcClient(
         override fun onRenegotiationNeeded() {}
         override fun onAddTrack(receiver:RtpReceiver,mediaStreams:Array<out MediaStream>) {
             val track=receiver.track()
-            if(track is VideoTrack) track.addSink(remoteSink)
+            if(track is VideoTrack) track.addSink(returnedTimingSink)
         }
     }
 
     fun stop() {
         stopped.set(true)
+        frameMarksEnabled=false
         connectJob?.cancel()
         reconnectJob?.cancel()
         statsJob?.cancel()

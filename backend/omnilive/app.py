@@ -22,7 +22,7 @@ from .models import (
     WebRtcAnswer,
     WebRtcOffer,
 )
-from .processor import processor
+from .processor import ProcessingTrace, processor
 from .regions import Region
 from .session import registry
 from .telemetry import (
@@ -61,6 +61,25 @@ class BenchmarkRequest(BaseModel):
     respect_inference_budget: bool = False
 
 
+class BenchmarkMatrixRequest(BaseModel):
+    effect: EffectProfile = EffectProfile.CUSTOM_ONNX
+    profiles: list[QualityProfile] = Field(
+        default_factory=lambda: [
+            QualityProfile.LOW_LATENCY,
+            QualityProfile.BALANCED,
+            QualityProfile.HIGH,
+        ],
+        min_length=1,
+        max_length=3,
+    )
+    crop_sizes: list[int] = Field(default_factory=lambda: [256, 320, 384, 448], min_length=1, max_length=8)
+    width: int = Field(default=960, ge=128, le=1280)
+    height: int = Field(default=540, ge=128, le=720)
+    warmup_frames: int = Field(default=2, ge=0, le=20)
+    steady_frames: int = Field(default=30, ge=3, le=120)
+    force_region: bool = True
+
+
 class LiveSocketStart(BaseModel):
     action: str = "start"
     profile: QualityProfile = QualityProfile.BALANCED
@@ -76,6 +95,108 @@ class LiveFrameMark(BaseModel):
     capture_timestamp_ns: int = Field(ge=0)
     capture_elapsed_ns: int = Field(ge=0)
     rtp_timestamp: int = Field(ge=0, le=0xFFFFFFFF)
+
+
+def _percentile(values: list[float], q: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(float(value) for value in values)
+    index = min(len(ordered) - 1, max(0, round((len(ordered) - 1) * q)))
+    return ordered[index]
+
+
+async def _benchmark_case(
+    *,
+    effect: EffectProfile,
+    profile: QualityProfile,
+    crop_max_side: int,
+    width: int,
+    height: int,
+    warmup_frames: int,
+    steady_frames: int,
+    force_region: bool,
+) -> dict:
+    sample = np.zeros((height, width, 3), dtype=np.uint8)
+    sample[::8, :, :] = 96
+    sample[:, ::8, :] = 160
+    stream_key = "benchmark-matrix-" + uuid.uuid4().hex
+    forced = Region(0, 0, width, height) if force_region else None
+    runtime_loaded_before = runtime.loaded
+    memory_before = runtime.memory_status()
+    traces: list[ProcessingTrace] = []
+
+    async def run_frame() -> ProcessingTrace:
+        trace = ProcessingTrace()
+        frame = VideoFrame.from_ndarray(sample, format="rgb24")
+        await processor.process(
+            frame,
+            effect,
+            stream_key=stream_key,
+            profile=profile,
+            force_region=forced,
+            force_inference=True,
+            crop_max_side_override=crop_max_side,
+            trace=trace,
+        )
+        traces.append(trace)
+        return trace
+
+    try:
+        first = await run_frame()
+        warmup: list[ProcessingTrace] = []
+        for _ in range(warmup_frames):
+            warmup.append(await run_frame())
+        steady: list[ProcessingTrace] = []
+        for _ in range(steady_frames):
+            steady.append(await run_frame())
+    finally:
+        processor.release_stream(stream_key)
+
+    memory_after = runtime.memory_status()
+    steady_model = [trace.model_ms for trace in steady if trace.model_ms is not None]
+    steady_total = [trace.total_ms for trace in steady]
+    model_p50 = _percentile(steady_model, 0.50)
+    model_p95 = _percentile(steady_model, 0.95)
+    total_p50 = _percentile(steady_total, 0.50)
+    total_p95 = _percentile(steady_total, 0.95)
+    last = steady[-1] if steady else first
+    model_inputs = [
+        (trace.model_input_width, trace.model_input_height)
+        for trace in steady
+        if trace.model_input_width > 0 and trace.model_input_height > 0
+    ]
+    actual_input = model_inputs[-1] if model_inputs else (first.model_input_width, first.model_input_height)
+
+    return {
+        "profile": profile.value,
+        "effect": effect.value,
+        "requested_crop_max_side": crop_max_side,
+        "model_input_width": actual_input[0],
+        "model_input_height": actual_input[1],
+        "runtime_loaded_before": runtime_loaded_before,
+        "runtime_loaded_after": runtime.loaded,
+        "runtime_load_ms": runtime.load_ms,
+        "first_pipeline_ms": round(first.total_ms, 3),
+        "first_model_ms": None if first.model_ms is None else round(first.model_ms, 3),
+        "warmup_frames": warmup_frames,
+        "warmup_pipeline_ms": [round(trace.total_ms, 3) for trace in warmup],
+        "steady_frames": steady_frames,
+        "steady_model_p50_ms": round(model_p50, 3),
+        "steady_model_p95_ms": round(model_p95, 3),
+        "steady_pipeline_p50_ms": round(total_p50, 3),
+        "steady_pipeline_p95_ms": round(total_p95, 3),
+        "sustainable_neural_fps_at_p95": round(1000.0 / model_p95, 2) if model_p95 > 0 else 0.0,
+        "sustainable_pipeline_fps_at_p95": round(1000.0 / total_p95, 2) if total_p95 > 0 else 0.0,
+        "inference_attempts": sum(1 for trace in traces if trace.inference_attempted),
+        "inference_successes": sum(1 for trace in traces if trace.inference_succeeded),
+        "inference_errors": sum(1 for trace in traces if trace.inference_error),
+        "final_target_neural_fps": round(last.target_neural_fps, 2),
+        "final_detector_interval": last.detector_interval,
+        "final_crop_max_side": last.crop_max_side,
+        "overload_events": last.overload_events,
+        "memory_before": memory_before,
+        "memory_after": memory_after,
+    }
 
 
 def _window_payload(window) -> dict:
@@ -315,6 +436,38 @@ async def benchmark(body: BenchmarkRequest):
         "processor_p95_ms": snap.p95_ms,
         "respect_inference_budget": body.respect_inference_budget,
         "telemetry": telemetry_payload(),
+    }
+
+
+@app.post("/v1/benchmark/matrix")
+async def benchmark_matrix(body: BenchmarkMatrixRequest):
+    crop_sizes = [max(64, min(1024, int(value))) for value in body.crop_sizes]
+    cases = []
+    started = time.perf_counter()
+    for profile in body.profiles:
+        for crop_size in crop_sizes:
+            cases.append(
+                await _benchmark_case(
+                    effect=body.effect,
+                    profile=profile,
+                    crop_max_side=crop_size,
+                    width=body.width,
+                    height=body.height,
+                    warmup_frames=body.warmup_frames,
+                    steady_frames=body.steady_frames,
+                    force_region=body.force_region,
+                )
+            )
+    return {
+        "effect": body.effect.value,
+        "profiles": [profile.value for profile in body.profiles],
+        "crop_sizes": crop_sizes,
+        "case_count": len(cases),
+        "elapsed_ms": round((time.perf_counter() - started) * 1000.0, 3),
+        "runtime": runtime.status(),
+        "vision": processor.vision_status(),
+        "memory": runtime.memory_status(),
+        "cases": cases,
     }
 
 

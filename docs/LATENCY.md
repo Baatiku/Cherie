@@ -17,17 +17,49 @@ The backend continuously drains the incoming aiortc video track into a one-frame
 
 If inference/compositing has not consumed the previous frame when a new decoded frame arrives, the old frame is overwritten and `input_overwritten_frames` increments. There is no unbounded processor queue.
 
-`input_age_p50_ms` and `input_age_p95_ms` measure decoded-frame arrival to processor pickup. This is useful for detecting backend backlog, but it is not yet the final capture-to-render round-trip metric.
+`input_age_p50_ms` and `input_age_p95_ms` measure decoded-frame arrival to processor pickup. They remain useful for diagnosing backend backlog, but they are distinct from the frame-correlated round-trip metric.
+
+## Frame-correlated round-trip timing
+
+Video remains entirely on WebRTC. The live WebSocket transports only compact timing metadata.
+
+For each marked capture:
+1. Android assigns a monotonic sequence.
+2. Android records the camera frame timestamp and `SystemClock.elapsedRealtimeNanos()`.
+3. Android sends a 90 kHz RTP timestamp estimate with the sequence.
+4. The backend calibrates that estimate against actual decoded aiortc frame PTS/RTP timing.
+5. The backend records decoded receive, processor start, and processor end times.
+6. The returned frame preserves the input frame PTS.
+7. Android calibrates the returned decoder timestamp to the backend report and matches the returned frame to the original sequence.
+8. Android computes p50/p95 from local capture time to returned-video sink / renderer-input arrival.
+
+This does not add pixels, frame copies, or a media queue to the signalling path. Both correlation stores and the backend timing publisher are bounded. Under overload, correlation metadata is discarded and loss counters increase rather than delaying video.
+
+The UI exposes:
+- frame round-trip p50/p95
+- correlated sample count
+- correlation misses
+- out-of-order timing reports
+- backend receive-to-processed-frame time for the latest matched frame
+
+A future renderer-present callback can refine the final display-present boundary. The current number is capture-to-returned-renderer-input and must not be described as physical display scanout latency.
 
 ## Adaptive profiles
 
-| Profile | Resolution | Camera FPS | Neural FPS | Detector cadence | Initial crop cap |
-|---|---:|---:|---:|---:|---:|
-| low_latency | 640x360 | 20 | 10 | every 12 frames | 256 px |
-| balanced | 960x540 | 24 | 14 | every 8 frames | 384 px |
-| high | 1280x720 | 30 | 18 | every 6 frames | 448 px |
+| Profile | Resolution | Camera FPS | Neural FPS | Detector cadence | Initial crop cap | Sender max bitrate |
+|---|---:|---:|---:|---:|---:|---:|
+| low_latency | 640x360 | 20 | 10 | every 12 frames | 256 px | 700 kbps |
+| balanced | 960x540 | 24 | 14 | every 8 frames | 384 px | 1400 kbps |
+| high | 1280x720 | 30 | 18 | every 6 frames | 448 px | 2500 kbps |
 
 Android quality drops quickly when RTT, packet loss, or backend processor p95 worsens and recovers more slowly to avoid oscillation.
+
+The same profile now controls:
+- capture resolution/FPS
+- sender maximum bitrate and sender maximum framerate
+- backend neural inference budget through the pinned WebSocket profile update
+
+There is still only one quality hysteresis loop. Bitrate control does not independently oscillate against capture adaptation.
 
 The backend has an independent neural budget. Consecutive model overruns:
 - reduce target neural FPS
@@ -35,8 +67,6 @@ The backend has an independent neural budget. Consecutive model overruns:
 - reduce crop maximum side
 
 Recovery requires a longer healthy streak.
-
-Adaptive Android profile changes are sent over the pinned live WebSocket so backend model budgeting follows the real capture profile instead of the profile that happened to start the call.
 
 ## Temporal reuse
 
@@ -47,7 +77,23 @@ Between inference slots the tracker continues to update the region on camera fra
 
 A confidence collapse clears the transform cache.
 
-## Stage telemetry
+## Transport telemetry
+
+Android WebRTC stats now expose:
+- nominated local/remote ICE candidate types
+- candidate transport protocol
+- relay/direct state
+- current candidate-pair RTT
+- packet loss
+- actual video send/receive kbps from byte deltas
+- available outgoing bitrate when the implementation reports it
+- target bitrate tier
+- encoder FPS
+- encoded/sent frame counts
+
+Candidate addresses are not required for the benchmark UI.
+
+## Processor telemetry
 
 Worker-local live telemetry reports p50/p95 for:
 - input wait
@@ -65,14 +111,9 @@ It also exposes:
 - tracking resets
 - inference errors
 - overload events
+- frame-correlation matches/drops/out-of-order metadata
 - current detector interval
 - current crop cap
 - target neural FPS
 - tracking confidence
 - active runtime/model provider diagnostics
-
-## Remaining end-to-end timing work
-
-Precise capture-to-render latency still needs a frame-correlated timestamp path across both peers. Do not approximate this from network RTT plus processor time and call it end-to-end latency.
-
-Until that instrumentation exists, use RTT, input age, processor stage timing, and Android rendered/received frame counts as separate measurements.

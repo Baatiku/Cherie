@@ -8,6 +8,8 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -37,9 +39,13 @@ class MainActivity:ComponentActivity() {
                         .getString("backend_url",BuildConfig.DEFAULT_BACKEND_URL) ?: BuildConfig.DEFAULT_BACKEND_URL)
                 }
                 val telemetry by LiveTelemetry.state.collectAsStateWithLifecycle()
+                val scroll=rememberScrollState()
 
                 Surface(Modifier.fillMaxSize()) {
-                    Column(Modifier.fillMaxSize().padding(16.dp),verticalArrangement=Arrangement.spacedBy(10.dp)) {
+                    Column(
+                        Modifier.fillMaxSize().verticalScroll(scroll).padding(16.dp),
+                        verticalArrangement=Arrangement.spacedBy(8.dp)
+                    ) {
                         Text("OmniLive",style=MaterialTheme.typography.headlineLarge)
                         if(running) ReturnedVideoView(Modifier.fillMaxWidth().aspectRatio(16f/9f))
 
@@ -104,8 +110,34 @@ class MainActivity:ComponentActivity() {
                         )
                         Text("Quality: "+telemetry.activeProfile+" · Effect: "+telemetry.activeEffect)
                         Text(
+                            "Frame RT p50/p95: "+(telemetry.frameLatencyP50Ms?.toString() ?: "—")+"/"+
+                                (telemetry.frameLatencyP95Ms?.toString() ?: "—")+" ms · n="+telemetry.frameLatencySamples
+                        )
+                        Text(
+                            "Correlation misses: "+telemetry.frameCorrelationMisses+" · Out-of-order: "+
+                                telemetry.frameCorrelationOutOfOrder+" · Backend frame: "+
+                                (telemetry.backendFrameTotalMs?.toString() ?: "—")+" ms"
+                        )
+                        Text(
                             "RTT: "+(telemetry.rttMs?.toString() ?: "—")+" ms · Loss: "+
                                 (telemetry.packetLoss?.let { String.format(Locale.US,"%.1f%%",it*100) } ?: "—")
+                        )
+                        Text(
+                            "ICE path: "+(telemetry.iceLocalCandidateType ?: "—")+" → "+
+                                (telemetry.iceRemoteCandidateType ?: "—")+" · "+
+                                (telemetry.iceTransport ?: "—")+" · "+
+                                when(telemetry.relayUsed) { true -> "relay"; false -> "direct"; null -> "—" }
+                        )
+                        Text(
+                            "Video kbps tx/rx: "+(telemetry.sentKbps?.toString() ?: "—")+"/"+
+                                (telemetry.receivedKbps?.toString() ?: "—")+" · target "+
+                                (telemetry.targetBitrateKbps?.toString() ?: "—")+" · available "+
+                                (telemetry.availableOutgoingKbps?.toString() ?: "—")
+                        )
+                        Text(
+                            "Encoder: "+(telemetry.encoderFps?.let { String.format(Locale.US,"%.1f fps",it) } ?: "—")+
+                                " · tier "+(telemetry.bitrateTier ?: "—")+" · encoded/sent "+
+                                (telemetry.framesEncoded?.toString() ?: "—")+"/"+(telemetry.framesSent?.toString() ?: "—")
                         )
                         Text(
                             "Backend p95: "+(telemetry.backendProcessorP95Ms?.toString() ?: "—")+" ms · Model: "+

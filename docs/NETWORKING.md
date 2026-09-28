@@ -8,6 +8,8 @@ TURN is a reliability fallback, not the preferred media path. WebRTC should use 
 
 Both peers need usable ICE configuration. OmniLive therefore applies the same dynamic ICE provider to Android and the backend aiortc PeerConnection.
 
+Android now resolves the nominated candidate pair from WebRTC stats and records local/remote candidate type, transport protocol, relay/direct state, candidate RTT, available outgoing bitrate, and actual video send/receive bitrate. Candidate IP addresses are intentionally unnecessary for routine benchmarking.
+
 ## Option A: self-host coturn near Nigerian users
 
 AWS currently lists the Nigeria (Lagos) Local Zone:
@@ -80,9 +82,14 @@ For the Nigeria-first latency objective, benchmark it rather than assuming Germa
 ## Benchmark order
 
 For each target network, record:
-- selected ICE candidate pair and whether relay was used
-- WebRTC RTT
+- nominated local/remote ICE candidate type
+- candidate protocol and relay/direct state
+- WebRTC candidate-pair RTT
 - packet loss
+- actual video send/receive kbps
+- target bitrate and available outgoing bitrate
+- encoder FPS and sent-frame count
+- frame-correlated capture-to-return p50/p95 and correlation misses
 - backend input age p50/p95
 - processor p50/p95 and model p50/p95
 - returned frames/FPS

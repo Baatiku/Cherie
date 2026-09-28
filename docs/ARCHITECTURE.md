@@ -17,12 +17,40 @@ Android Camera2
   -> aiortc return track
   -> WebRTC downlink
   -> Android hardware decoder
-  -> ReturnedVideoBus / local renderer
+  -> ReturnedVideoBus compatibility facade
+  -> ProcessedFrameOutput
+       -> normal preview renderer
+       -> future local Surface output
+       -> future isolated rooted lab adapter
 ```
 
-The Android offer is now exchanged over the same long-lived WebSocket that keeps the live GPU input active. Session creation for the live path happens inside that pinned worker, so the in-memory session state and aiortc peer cannot accidentally be split across unrelated Modal containers.
+The Android offer is exchanged over the same long-lived WebSocket that keeps the live GPU input active. Session creation for the live path happens inside that pinned worker, so the in-memory session state and aiortc peer cannot accidentally be split across unrelated Modal containers.
 
 The older HTTP session and offer endpoints remain for compatibility and diagnostics.
+
+### Frame timing sideband
+
+Video remains on WebRTC. The pinned WebSocket carries only small frame-correlation metadata:
+- Android monotonic capture sequence and local monotonic capture time
+- a 90 kHz RTP timestamp estimate used for clock-offset calibration
+- backend receive / processor-start / processor-end timing
+- the actual decoded RTP timestamp observed by aiortc
+
+The backend correlator and Android correlator are bounded. They may drop timing metadata rather than block media. The returned frame preserves RTP timing, allowing Android to match the returned decoded frame to the original capture and measure capture-to-returned-sink p50/p95 without pretending that RTT plus processor time is end-to-end latency.
+
+## Android processed-frame output boundary
+
+`ProcessedFrameOutput` is the generic local handoff below `ReturnedVideoBus`.
+
+It provides:
+- normal `VideoSink` preview compatibility
+- optional `ProcessedFrameConsumer` outputs
+- width, height, rotation, and frame timestamp metadata
+- stream-available/unavailable lifecycle notifications
+- per-consumer frame retain/release isolation
+- failure isolation so an optional output cannot break the normal preview
+
+No root code, target-app logic, or conferencing-specific behavior belongs in this layer. A future Surface producer and rooted lab adapter consume this boundary instead of entering WebRTC transport code.
 
 ## ICE and TURN
 
@@ -36,6 +64,8 @@ OmniLive supports:
 
 Permanent TURN shared secrets never need to be sent to Android.
 
+Android live telemetry resolves the nominated candidate pair and reports candidate types, protocol, relay/direct state, RTT, and available outgoing bitrate without exposing candidate addresses in the UI.
+
 ## Latency strategy
 
 - one live WebSocket input per L4 container during MVP benchmarking
@@ -47,6 +77,8 @@ Permanent TURN shared secrets never need to be sent to Android.
 - short transform-cache TTL with tracker-confidence invalidation
 - hardware encode/decode on Android where available
 - adaptive capture resolution/FPS from RTT, loss, and backend p95
+- bitrate limits tied to the same hysteretic quality profile
+- frame-correlated capture-to-return timing measured separately from network RTT
 - worker-local telemetry returned over the pinned WebSocket
 
 Target added round-trip latency remains below 250 ms, with a stretch target around 150-180 ms on a good network.

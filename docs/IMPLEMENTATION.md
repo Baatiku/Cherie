@@ -29,10 +29,13 @@
 - [x] latest-frame decoded input slot; stale unconsumed frames are overwritten, not queued
 - [x] backend media/input-age/processor latency windows
 - [x] EGL renderer cleanup
+- [x] frame-correlated capture-to-returned-sink timing with p50/p95 and correlation-loss counters
+- [x] explicit sender bitrate/framerate limits tied to the existing adaptive quality profile
+- [x] actual send/receive bitrate, encoder FPS, and available-outgoing-bitrate telemetry
+- [x] selected ICE candidate-pair type/protocol and relay/direct telemetry
 - [ ] production TURN deployment near target users
-- [ ] precise capture-to-render end-to-end timestamp correlation
-- [ ] explicit WebRTC bitrate control after real-device measurements
 - [ ] real-device network transition and 30-minute transport soak test
+- [ ] optional renderer-present timestamp refinement beyond renderer-input timing
 
 ## Phase 3 — GPU visual processor
 - [x] GPU-resident processor contract
@@ -66,12 +69,13 @@
 - [ ] Modal L4 live-model latency benchmark
 
 ## Phase 4 — rooted Android lab adapter
-- [ ] isolated adapter module
-- [ ] local processed-frame Surface/buffer producer abstraction
+- [x] generic ProcessedFrameOutput boundary below ReturnedVideoBus
+- [ ] local processed-frame Surface/buffer producer
+- [ ] isolated rooted adapter module
 - [ ] package-scoped compatibility testing
 - [ ] camera lifecycle recovery/fallback
 
-The rooted lab phase remains isolated from transport/model code and has not been started prematurely.
+The rooted lab phase remains isolated from transport/model code. The generic output boundary is now ready for a Surface producer, but no root-specific code has been mixed into normal OmniLive.
 
 ## Phase 5 — hardening
 - [ ] thermal/battery handling
@@ -83,8 +87,8 @@ The rooted lab phase remains isolated from transport/model code and has not been
 
 ## Current external gates
 
-The core software can proceed without model weights, but the next meaningful latency gate requires:
+The core software can proceed without model weights, but real performance validation requires:
 1. a Modal `omnilive-runtime` Secret and a deployed endpoint from current main
 2. a reachable TURN service or managed TURN credentials
 3. a real Android test device
-4. a real ONNX model in the omnilive-models Volume for custom-model benchmarks
+4. a real ONNX model in the `omnilive-models` Volume for custom-model benchmarks

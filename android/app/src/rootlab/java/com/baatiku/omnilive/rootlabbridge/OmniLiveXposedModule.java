@@ -1,6 +1,7 @@
 package com.baatiku.omnilive.rootlabbridge;
 
 import android.hardware.camera2.CameraManager;
+import android.hardware.camera2.CaptureRequest;
 import android.hardware.camera2.params.OutputConfiguration;
 import android.hardware.camera2.params.SessionConfiguration;
 import android.util.Log;
@@ -18,8 +19,9 @@ import io.github.libxposed.api.XposedModule;
  * Rootlab-only modern libxposed entry point.
  *
  * This class is packaged only in -Pomnilive.rootLab=true APKs and the module scope is statically
- * restricted to Zoom. It observes Camera2 lifecycle and capture-session output surfaces so the
- * compatibility adapter can make package-scoped decisions without touching normal OmniLive.
+ * restricted to Zoom. When the OmniLive broker reports a live returned-frame path, the common
+ * Camera2 List<Surface> session path is redirected to drained dummy outputs while OmniLive owns
+ * Zoom's original surfaces. Unsupported session shapes and not-ready states remain fail-open.
  */
 public final class OmniLiveXposedModule extends XposedModule {
     private static final String TAG = "OmniLiveRootLab";
@@ -46,6 +48,7 @@ public final class OmniLiveXposedModule extends XposedModule {
                 "createReprocessableCaptureSession",
                 "createReprocessableCaptureSessionByConfigurations"
             );
+            int requestTargetHooks = hookCaptureRequestTargets();
             int deviceCloseHooks = hookClassMethods(
                 "android.hardware.camera2.impl.CameraDeviceImpl",
                 param.getClassLoader(),
@@ -59,7 +62,7 @@ public final class OmniLiveXposedModule extends XposedModule {
 
             TargetCameraEventState.markHooksInstalled(
                 managerHooks,
-                deviceHooks,
+                deviceHooks + requestTargetHooks,
                 deviceCloseHooks + sessionCloseHooks
             );
             log(
@@ -67,6 +70,7 @@ public final class OmniLiveXposedModule extends XposedModule {
                 TAG,
                 "Zoom Camera2 hooks ready: manager=" + managerHooks
                     + " session=" + deviceHooks
+                    + " requestTarget=" + requestTargetHooks
                     + " close=" + (deviceCloseHooks + sessionCloseHooks)
             );
         } catch (Throwable t) {
@@ -84,12 +88,52 @@ public final class OmniLiveXposedModule extends XposedModule {
                     Object first = chain.getArg(0);
                     String cameraId = first instanceof String ? (String) first : "unknown";
                     TargetCameraEventState.onCameraOpenRequested(cameraId);
+                    TargetSurfaceRedirector.reset();
+                    RootLabSurfaceBrokerClient.clearSurfaces();
                     RootLabSurfaceBrokerClient.ensureConnected();
                     return chain.proceed();
                 });
                 count++;
             } catch (Throwable t) {
                 log(Log.WARN, TAG, "openCamera hook skipped: " + method, t);
+            }
+        }
+        return count;
+    }
+
+    private int hookCaptureRequestTargets() {
+        int count = 0;
+        for (Method method : CaptureRequest.Builder.class.getDeclaredMethods()) {
+            String name = method.getName();
+            if (!"addTarget".equals(name) && !"removeTarget".equals(name)) continue;
+            try {
+                hook(method).intercept(chain -> {
+                    Object first = chain.getArg(0);
+                    if (!(first instanceof Surface)) return chain.proceed();
+
+                    Surface original = (Surface) first;
+                    boolean ready = RootLabSurfaceBrokerClient.isReadyForRedirect();
+                    if ("addTarget".equals(name) && !ready) {
+                        TargetSurfaceRedirector.markUnsafeTarget(original);
+                        return chain.proceed();
+                    }
+
+                    Surface replacement = TargetSurfaceRedirector.substituteTarget(
+                        original,
+                        "addTarget".equals(name) && ready
+                    );
+                    if (replacement == null || replacement == original) {
+                        return chain.proceed();
+                    }
+
+                    Object[] args = chain.getArgs().toArray();
+                    args[0] = replacement;
+                    Log.i(TAG, "redirected CaptureRequest.Builder#" + name + " target");
+                    return chain.proceed(args);
+                });
+                count++;
+            } catch (Throwable t) {
+                log(Log.WARN, TAG, "CaptureRequest target hook skipped: " + method, t);
             }
         }
         return count;
@@ -108,14 +152,44 @@ public final class OmniLiveXposedModule extends XposedModule {
                 try {
                     if (method.getName().startsWith("create")) {
                         hook(method).intercept(chain -> {
-                            List<Surface> outputs = collectSurfaces(chain.getArgs().toArray());
+                            Object[] args = chain.getArgs().toArray();
+                            List<Surface> outputs = collectSurfaces(args);
                             TargetCameraEventState.onCaptureSessionRequested(outputs);
+
+                            if (!RootLabSurfaceBrokerClient.isReadyForRedirect()) {
+                                TargetSurfaceRedirector.reset();
+                                RootLabSurfaceBrokerClient.clearSurfaces();
+                                Log.i(TAG, "capture session kept physical: OmniLive broker not ready");
+                                return chain.proceed();
+                            }
+
+                            Object[] redirected = TargetSurfaceRedirector.redirectSessionArgs(args);
+                            if (redirected == null) {
+                                TargetSurfaceRedirector.reset();
+                                RootLabSurfaceBrokerClient.clearSurfaces();
+                                Log.i(TAG, "capture session kept physical: unsupported or unsafe output shape");
+                                return chain.proceed();
+                            }
+
                             RootLabSurfaceBrokerClient.publishSurfaces(outputs);
-                            return chain.proceed();
+                            Log.i(
+                                TAG,
+                                "redirected capture session outputs=" + outputs.size()
+                                    + " mappings=" + TargetSurfaceRedirector.activeMappings()
+                            );
+                            try {
+                                return chain.proceed(redirected);
+                            } catch (Throwable t) {
+                                TargetSurfaceRedirector.reset();
+                                RootLabSurfaceBrokerClient.clearSurfaces();
+                                Log.w(TAG, "redirected capture session failed; mappings cleared", t);
+                                throw t;
+                            }
                         });
                     } else if ("close".equals(method.getName())) {
                         hook(method).intercept(chain -> {
                             TargetCameraEventState.onCameraPathClosed(className);
+                            TargetSurfaceRedirector.reset();
                             RootLabSurfaceBrokerClient.clearSurfaces();
                             return chain.proceed();
                         });

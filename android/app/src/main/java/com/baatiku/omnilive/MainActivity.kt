@@ -24,6 +24,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.baatiku.omnilive.diagnostics.DeviceDiagnostics
 import com.baatiku.omnilive.diagnostics.LiveDiagnostics
+import com.baatiku.omnilive.diagnostics.RootLabDiagnosticsReader
 import com.baatiku.omnilive.net.TransportPreflight
 import com.baatiku.omnilive.stream.LiveSessionPhase
 import com.baatiku.omnilive.stream.LiveSessionState
@@ -32,6 +33,7 @@ import com.baatiku.omnilive.stream.LiveTelemetry
 import com.baatiku.omnilive.stream.ReferenceImageStore
 import com.baatiku.omnilive.ui.ReturnedVideoView
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.Locale
@@ -64,6 +66,9 @@ class MainActivity:ComponentActivity() {
                 var backendChecking by remember { mutableStateOf(false) }
                 var backendCheckStatus by remember { mutableStateOf<String?>(null) }
                 var diagnosticsStatus by remember { mutableStateOf<String?>(null) }
+                var rootLabDiagnostics by remember {
+                    mutableStateOf(RootLabDiagnosticsReader.read())
+                }
                 var cameraGranted by remember {
                     mutableStateOf(
                         ContextCompat.checkSelfPermission(this@MainActivity,Manifest.permission.CAMERA)
@@ -77,6 +82,15 @@ class MainActivity:ComponentActivity() {
                 }
                 LaunchedEffect(Unit) {
                     if(!cameraGranted) cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                }
+
+                LaunchedEffect(BuildConfig.ROOT_LAB_ENABLED) {
+                    if(BuildConfig.ROOT_LAB_ENABLED) {
+                        while(true) {
+                            rootLabDiagnostics=RootLabDiagnosticsReader.read()
+                            delay(1_000L)
+                        }
+                    }
                 }
 
                 val referencePicker=rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
@@ -145,6 +159,9 @@ class MainActivity:ComponentActivity() {
                                 " · camera "+if(deviceSnapshot.cameraGranted) "granted" else "missing"
                         )
                         Text("Root lab compiled: "+if(deviceSnapshot.rootLabEnabled) "yes" else "no")
+                        rootLabDiagnostics?.let { diagnostics ->
+                            Text("Root lab runtime: "+diagnostics.summary)
+                        }
                         Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
                             OutlinedButton(
                                 onClick={
@@ -194,6 +211,12 @@ class MainActivity:ComponentActivity() {
                                                     "Transport preflight: "+
                                                         (backendCheckStatus ?: "not run")
                                                 )
+                                                rootLabDiagnostics?.let { rootlab ->
+                                                    appendLine("Root lab runtime: "+rootlab.summary)
+                                                    if(rootlab.json.isNotBlank()) {
+                                                        appendLine("Root lab snapshot: "+rootlab.json)
+                                                    }
+                                                }
                                                 appendLine()
                                                 append(LiveDiagnostics.asText(telemetry))
                                             }

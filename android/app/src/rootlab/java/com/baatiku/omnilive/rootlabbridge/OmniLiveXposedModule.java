@@ -113,7 +113,8 @@ public final class OmniLiveXposedModule extends XposedModule {
 
                     Surface original = (Surface) first;
                     boolean ready = RootLabSurfaceBrokerClient.isReadyForRedirect();
-                    if ("addTarget".equals(name) && !ready) {
+                    boolean alreadyRedirected = TargetSurfaceRedirector.isRedirected(original);
+                    if ("addTarget".equals(name) && !ready && !alreadyRedirected) {
                         TargetSurfaceRedirector.markUnsafeTarget(original);
                         return chain.proceed();
                     }
@@ -122,6 +123,12 @@ public final class OmniLiveXposedModule extends XposedModule {
                         original,
                         "addTarget".equals(name) && ready
                     );
+                    if (!ready && alreadyRedirected) {
+                        Log.i(
+                            TAG,
+                            "retaining existing redirected request target while broker is temporarily unavailable"
+                        );
+                    }
                     if (replacement == null || replacement == original) {
                         return chain.proceed();
                     }

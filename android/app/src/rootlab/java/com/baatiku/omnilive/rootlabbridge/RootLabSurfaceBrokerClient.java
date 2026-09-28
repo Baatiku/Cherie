@@ -25,8 +25,18 @@ final class RootLabSurfaceBrokerClient {
     private static final int MSG_CLEAR_SURFACES = 2;
     private static final int MSG_QUERY_STATE = 3;
     private static final int MSG_STATE = 4;
+    private static final int MSG_TARGET_STATE = 5;
     private static final String KEY_SURFACES = "surfaces";
     private static final String KEY_READY = "ready";
+    private static final String KEY_MANAGER_HOOKS = "manager_hooks";
+    private static final String KEY_SESSION_HOOKS = "session_hooks";
+    private static final String KEY_CLOSE_HOOKS = "close_hooks";
+    private static final String KEY_OPEN_REQUESTS = "open_requests";
+    private static final String KEY_SESSION_REQUESTS = "session_requests";
+    private static final String KEY_CLOSE_EVENTS = "close_events";
+    private static final String KEY_LAST_CAMERA_ID = "last_camera_id";
+    private static final String KEY_LAST_SURFACE_COUNT = "last_surface_count";
+    private static final String KEY_LAST_HOOK_ERROR = "last_hook_error";
 
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
     private static Messenger remote;
@@ -51,6 +61,7 @@ final class RootLabSurfaceBrokerClient {
             binding = false;
             Log.i(TAG, "rootlab surface broker connected");
             queryState();
+            publishTargetState();
             flush();
         }
 
@@ -106,6 +117,30 @@ final class RootLabSurfaceBrokerClient {
         return remote != null && brokerReady;
     }
 
+    private static void publishTargetState() {
+        Messenger target = remote;
+        if (target == null) return;
+        try {
+            TargetCameraEventState.Snapshot snapshot = TargetCameraEventState.snapshot();
+            Bundle bundle = new Bundle();
+            bundle.putInt(KEY_MANAGER_HOOKS, snapshot.managerHooks());
+            bundle.putInt(KEY_SESSION_HOOKS, snapshot.sessionHooks());
+            bundle.putInt(KEY_CLOSE_HOOKS, snapshot.closeHooks());
+            bundle.putInt(KEY_OPEN_REQUESTS, snapshot.openRequests());
+            bundle.putInt(KEY_SESSION_REQUESTS, snapshot.sessionRequests());
+            bundle.putInt(KEY_CLOSE_EVENTS, snapshot.closeEvents());
+            bundle.putString(KEY_LAST_CAMERA_ID, snapshot.lastCameraId());
+            bundle.putInt(KEY_LAST_SURFACE_COUNT, snapshot.lastSurfaceCount());
+            bundle.putString(KEY_LAST_HOOK_ERROR, snapshot.lastError());
+            Message message = Message.obtain(null, MSG_TARGET_STATE);
+            message.replyTo = LOCAL;
+            message.setData(bundle);
+            target.send(message);
+        } catch (Throwable t) {
+            Log.w(TAG, "target-state publish failed", t);
+        }
+    }
+
     private static void queryState() {
         Messenger target = remote;
         if (target == null) return;
@@ -147,6 +182,7 @@ final class RootLabSurfaceBrokerClient {
         Messenger target = remote;
         if (target == null) return;
         try {
+            publishTargetState();
             if (pendingClear) {
                 Message clear = Message.obtain(null, MSG_CLEAR_SURFACES);
                 clear.replyTo = LOCAL;

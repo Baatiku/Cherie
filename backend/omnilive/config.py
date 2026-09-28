@@ -24,6 +24,7 @@ class Settings:
     model_adapter: str = os.getenv("OMNILIVE_MODEL_ADAPTER", "single_image").strip().lower()
     model_live_input: str = os.getenv("OMNILIVE_MODEL_LIVE_INPUT", "").strip()
     model_reference_input: str = os.getenv("OMNILIVE_MODEL_REFERENCE_INPUT", "").strip()
+    model_retry_cooldown_seconds: float = float(os.getenv("OMNILIVE_MODEL_RETRY_COOLDOWN_SECONDS", "2.0"))
     model_allow_cpu_fallback: bool = _bool("OMNILIVE_MODEL_ALLOW_CPU_FALLBACK", False)
     model_retry_cooldown_seconds: float = float(os.getenv("OMNILIVE_MODEL_RETRY_COOLDOWN_SECONDS", "1.5"))
     model_provider_quarantine_seconds: float = float(os.getenv("OMNILIVE_MODEL_PROVIDER_QUARANTINE_SECONDS", "30"))

@@ -31,7 +31,7 @@ class WebRtcClient(
 ) {
     private val scope=CoroutineScope(SupervisorJob()+Dispatchers.IO)
     private val egl=EglBase.create()
-    private val eglContext=eglContext.also { SharedEglContextRegistry.publish(it) }
+    private val eglContext=egl.eglBaseContext.also { SharedEglContextRegistry.publish(it) }
     private val connectivity=context.getSystemService(ConnectivityManager::class.java)
     private val httpClient=OkHttpClient.Builder().pingInterval(20,TimeUnit.SECONDS).build()
     private lateinit var factory:PeerConnectionFactory

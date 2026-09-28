@@ -302,7 +302,11 @@ class YoloPersonDetector:
             array = array.reshape(1, -1)
         if array.ndim != 2:
             raise ValueError("YOLO output must reduce to a 2D prediction matrix")
-        if array.shape[0] <= 128 and array.shape[1] > array.shape[0]:
+        feature_first = (
+            array.shape[0] in (6, 84, 85)
+            and array.shape[1] != array.shape[0]
+        )
+        if feature_first or (array.shape[0] <= 128 and array.shape[1] > array.shape[0]):
             array = array.T
         return array.astype(np.float32)
 

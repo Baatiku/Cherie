@@ -2,47 +2,39 @@
 
 ## Phase 1 — foundation
 - [x] repository repurposed as OmniLive
-- [x] Android project
-- [x] streaming foreground service
-- [x] Camera2 abstraction
-- [x] adaptive quality controller
-- [x] frame-age gate
-- [x] backend session registry
-- [x] token expiry
-- [x] frame freshness/order policy
+- [x] Android project and foreground service
+- [x] adaptive quality / frame-age controls
+- [x] session registry and expiry
 - [x] Modal L4 worker skeleton
-- [x] health/session APIs
-- [x] backend tests
-- [x] CI
+- [x] CI and tests
 
 ## Phase 2 — realtime transport
-- [ ] Android WebRTC native dependency
-- [ ] signalling endpoint
+- [x] current WebRTC Android SDK
+- [x] Android PeerConnection + Camera2 capture
+- [x] SDP offer/answer endpoint
+- [x] backend aiortc PeerConnection
+- [x] returned video track
 - [ ] TURN configuration
-- [ ] camera source -> WebRTC track
-- [ ] returned track -> decoder Surface
-- [ ] RTT/loss telemetry
+- [ ] Android returned-track renderer/local Surface
+- [ ] WebRTC RTT/loss stats
+- [ ] reconnect/backoff state machine
 
 ## Phase 3 — GPU face processor
 - [ ] FaceFusion-compatible assets
 - [ ] ONNX Runtime CUDA/TensorRT
-- [ ] detector
-- [ ] tracker
+- [ ] detector + landmark tracker
 - [ ] identity embedding cache
 - [ ] swap model
-- [ ] occlusion mask
-- [ ] color correction
-- [ ] optional enhancer
+- [ ] masks/color correction/enhancer
+- [ ] temporal inference reuse
 
 ## Phase 4 — rooted Android lab adapter
 - [ ] isolated adapter module
 - [ ] local Surface provider
 - [ ] explicit test-app scoping
-- [ ] camera lifecycle recovery
-- [ ] physical-camera fallback
+- [ ] lifecycle recovery/fallback
 
 ## Phase 5 — hardening
-- [ ] reconnect logic
 - [ ] adaptive bitrate
 - [ ] thermal/battery handling
 - [ ] GPU worker retry

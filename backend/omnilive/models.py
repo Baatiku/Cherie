@@ -28,3 +28,13 @@ class FrameDecision(BaseModel):
     accept: bool
     age_ms: int
     reason: str
+
+class WebRtcOffer(BaseModel):
+    session_id: str
+    token: str
+    sdp: str
+    type: str = "offer"
+
+class WebRtcAnswer(BaseModel):
+    sdp: str
+    type: str = "answer"

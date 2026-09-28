@@ -15,6 +15,7 @@ ROOTLAB_MODE="${OMNILIVE_ROOTLAB_MODE:-0}"
 ROOTLAB_TARGET="${OMNILIVE_ROOTLAB_TARGET_PACKAGE:-us.zoom.videomeetings}"
 ROOTLAB_LAUNCH_TARGET="${OMNILIVE_ROOTLAB_LAUNCH_TARGET:-0}"
 ROOTLAB_REQUIRE_HOOKS="${OMNILIVE_ROOTLAB_REQUIRE_HOOKS:-0}"
+ROOTLAB_REQUIRE_REDIRECT="${OMNILIVE_ROOTLAB_REQUIRE_REDIRECT:-0}"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 REPORT="${OUT_DIR}/device-smoke-${STAMP}.txt"
 
@@ -55,6 +56,7 @@ fi
   echo "backend=${BACKEND_URL:-<not supplied>}"
   echo "rootlab_mode=${ROOTLAB_MODE}"
   echo "rootlab_target=${ROOTLAB_TARGET}"
+  echo "rootlab_require_redirect=${ROOTLAB_REQUIRE_REDIRECT}"
   echo
   "${ADB[@]}" shell getprop ro.product.manufacturer | tr -d '\r' | sed 's/^/manufacturer=/'
   "${ADB[@]}" shell getprop ro.product.model | tr -d '\r' | sed 's/^/model=/'
@@ -150,6 +152,28 @@ if [[ "${ROOTLAB_MODE}" == "1" ]]; then
     echo "rootlab_surface_attach=observed" >> "${REPORT}"
   else
     echo "rootlab_surface_attach=not_observed" >> "${REPORT}"
+  fi
+
+  if printf '%s\n' "${LOGS}" | grep -Eq 'broker state ready=true'; then
+    echo "rootlab_broker_ready=observed" >> "${REPORT}"
+  else
+    echo "rootlab_broker_ready=not_observed" >> "${REPORT}"
+  fi
+
+  if printf '%s\n' "${LOGS}" | grep -Eq 'redirected capture session outputs=[1-9]'; then
+    echo "rootlab_redirect=observed" >> "${REPORT}"
+  else
+    echo "rootlab_redirect=not_observed" >> "${REPORT}"
+    if [[ "${ROOTLAB_REQUIRE_REDIRECT}" == "1" ]]; then
+      echo "FAIL: rootlab redirection was required but no redirected Camera2 session was observed" | tee -a "${REPORT}"
+      exit 1
+    fi
+  fi
+
+  if printf '%s\n' "${LOGS}" | grep -Eq 'capture session kept physical:'; then
+    echo "rootlab_physical_fallback=observed" >> "${REPORT}"
+  else
+    echo "rootlab_physical_fallback=not_observed" >> "${REPORT}"
   fi
 fi
 

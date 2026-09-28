@@ -265,6 +265,30 @@ class WebRtcClient(
         return websocketBase+"/v1/live"
     }
 
+    private fun applyAdaptiveProfile(next:String,packetLoss:Double?=null) {
+        if(next!=activeProfileName) {
+            activeProfileName=next
+            val p=QualityProfile.fromName(next)
+            capturer?.changeCaptureFormat(p.width,p.height,p.cameraFps)
+            applySenderLimits(next)
+            try {
+                liveSocket?.send(
+                    JSONObject()
+                        .put("action","profile")
+                        .put("profile",next)
+                        .toString()
+                )
+            } catch(_:Throwable) {}
+        }
+        LiveTelemetry.update {
+            it.copy(
+                activeProfile=activeProfileName,
+                packetLoss=packetLoss ?: it.packetLoss,
+                thermalQualityCap=quality.thermalCap
+            )
+        }
+    }
+
     private fun applySenderLimits(profileName:String) {
         val sender=videoSender ?: return
         val profile=QualityProfile.fromName(profileName)
@@ -581,22 +605,19 @@ class WebRtcClient(
 
             val oldLost=previousLost
             val oldReceived=previousReceived
+            val thermalStatus=LiveTelemetry.state.value.thermalStatus
+            var adaptiveSampleApplied=false
             if(rttMs!=null && packetsLost!=null && packetsReceived!=null && oldLost!=null && oldReceived!=null) {
                 val lostDelta=max(0,packetsLost!!-oldLost)
                 val receivedDelta=max(0,packetsReceived!!-oldReceived)
                 val total=lostDelta+receivedDelta
                 val loss=if(total>0) lostDelta.toDouble()/total.toDouble() else 0.0
-                val next=quality.update(rttMs!!,loss,backendP95Ms)
-                if(next!=activeProfileName) {
-                    activeProfileName=next
-                    val p=QualityProfile.fromName(next)
-                    capturer?.changeCaptureFormat(p.width,p.height,p.cameraFps)
-                    applySenderLimits(next)
-                    try {
-                        liveSocket?.send(JSONObject().put("action","profile").put("profile",next).toString())
-                    } catch(_:Throwable) {}
-                    LiveTelemetry.update { it.copy(activeProfile=next,packetLoss=loss) }
-                } else LiveTelemetry.update { it.copy(packetLoss=loss) }
+                val next=quality.update(rttMs!!,loss,backendP95Ms,thermalStatus)
+                applyAdaptiveProfile(next,loss)
+                adaptiveSampleApplied=true
+            }
+            if(!adaptiveSampleApplied) {
+                applyAdaptiveProfile(quality.applyThermalStatus(thermalStatus))
             }
             previousLost=packetsLost
             previousReceived=packetsReceived

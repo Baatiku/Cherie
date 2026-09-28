@@ -30,6 +30,10 @@ from .telemetry import (
     compositor_window,
     detector_window,
     dropped_inference_counter,
+    frame_correlation_drop_counter,
+    frame_correlation_match_counter,
+    frame_correlation_out_of_order_counter,
+    frame_timing_publish_drop_counter,
     inference_error_counter,
     input_age_window,
     input_overwrite_counter,
@@ -41,9 +45,9 @@ from .telemetry import (
     tracker_window,
     tracking_reset_counter,
 )
-from .webrtc import accept_offer, close_all_peers, close_peer
+from .webrtc import FrameTimingBridge, accept_offer, close_all_peers, close_peer
 
-app = FastAPI(title="OmniLive", version="0.9.0")
+app = FastAPI(title="OmniLive", version="0.10.0")
 
 
 class BenchmarkRequest(BaseModel):
@@ -63,6 +67,14 @@ class LiveSocketStart(BaseModel):
     region_hint: str | None = None
     sdp: str = Field(min_length=1)
     type: str = "offer"
+
+
+class LiveFrameMark(BaseModel):
+    action: str = "frame_mark"
+    sequence: int = Field(ge=0)
+    capture_timestamp_ns: int = Field(ge=0)
+    capture_elapsed_ns: int = Field(ge=0)
+    rtp_timestamp: int = Field(ge=0, le=0xFFFFFFFF)
 
 
 def _window_payload(window) -> dict:
@@ -101,6 +113,10 @@ def telemetry_payload():
         "tracking_resets": tracking_reset_counter.value,
         "inference_errors": inference_error_counter.value,
         "overload_events": overload_event_counter.value,
+        "frame_correlations": frame_correlation_match_counter.value,
+        "frame_correlation_drops": frame_correlation_drop_counter.value,
+        "frame_correlation_out_of_order": frame_correlation_out_of_order_counter.value,
+        "frame_timing_publish_drops": frame_timing_publish_drop_counter.value,
         "stages": {
             "input_wait": _window_payload(media_wait_window),
             "input_age": _window_payload(input_age_window),
@@ -139,15 +155,47 @@ def ice_config():
 async def live_socket(websocket: WebSocket):
     await websocket.accept()
     session = None
+    timing_task = None
+    telemetry_task = None
+    send_lock = asyncio.Lock()
+    timing_queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=64)
+
+    async def send_json(payload: dict) -> None:
+        async with send_lock:
+            await websocket.send_json(payload)
+
+    def publish_timing(report: dict) -> None:
+        payload = {"event": "frame_timing", **report}
+        if timing_queue.full():
+            try:
+                timing_queue.get_nowait()
+                frame_timing_publish_drop_counter.increment()
+            except asyncio.QueueEmpty:
+                pass
+        try:
+            timing_queue.put_nowait(payload)
+        except asyncio.QueueFull:
+            frame_timing_publish_drop_counter.increment()
+
+    async def timing_sender() -> None:
+        while True:
+            await send_json(await timing_queue.get())
+
+    async def telemetry_sender() -> None:
+        while True:
+            await asyncio.sleep(2.0)
+            await send_json({"event": "telemetry", "telemetry": telemetry_payload()})
+
+    timing_bridge = FrameTimingBridge(publish_timing)
     try:
         payload = await websocket.receive_json()
         if payload.get("action") != "start":
-            await websocket.send_json({"event": "error", "detail": "first message must be start"})
+            await send_json({"event": "error", "detail": "first message must be start"})
             return
         try:
             start = LiveSocketStart.model_validate(payload)
         except ValidationError:
-            await websocket.send_json({"event": "error", "detail": "invalid live start payload"})
+            await send_json({"event": "error", "detail": "invalid live start payload"})
             return
 
         session = registry.create(start.profile, start.effect, start.region_hint)
@@ -157,9 +205,10 @@ async def live_socket(websocket: WebSocket):
                 token=session.token,
                 sdp=start.sdp,
                 type=start.type,
-            )
+            ),
+            timing_bridge=timing_bridge,
         )
-        await websocket.send_json(
+        await send_json(
             {
                 "event": "answer",
                 "session_id": session.session_id,
@@ -172,37 +221,53 @@ async def live_socket(websocket: WebSocket):
             }
         )
 
-        while True:
-            try:
-                message = await asyncio.wait_for(websocket.receive_json(), timeout=2.0)
-            except asyncio.TimeoutError:
-                await websocket.send_json({"event": "telemetry", "telemetry": telemetry_payload()})
-                continue
+        timing_task = asyncio.create_task(timing_sender(), name="omnilive-frame-timing")
+        telemetry_task = asyncio.create_task(telemetry_sender(), name="omnilive-live-telemetry")
 
+        while True:
+            message = await websocket.receive_json()
             action = message.get("action")
             if action == "stop":
                 break
             if action == "ping":
-                await websocket.send_json({"event": "pong", "telemetry": telemetry_payload()})
+                await send_json({"event": "pong", "telemetry": telemetry_payload()})
                 continue
             if action == "profile":
                 try:
                     profile = QualityProfile(message.get("profile"))
                 except (TypeError, ValueError):
-                    await websocket.send_json({"event": "error", "detail": "invalid quality profile"})
+                    await send_json({"event": "error", "detail": "invalid quality profile"})
                     continue
                 if registry.update_profile(session.session_id, profile):
-                    await websocket.send_json({"event": "profile", "profile": profile.value})
+                    await send_json({"event": "profile", "profile": profile.value})
                 continue
-            await websocket.send_json({"event": "error", "detail": "unsupported live action"})
+            if action == "frame_mark":
+                try:
+                    mark = LiveFrameMark.model_validate(message)
+                except ValidationError:
+                    await send_json({"event": "error", "detail": "invalid frame mark"})
+                    continue
+                timing_bridge.note_capture(
+                    mark.sequence,
+                    mark.capture_timestamp_ns,
+                    mark.capture_elapsed_ns,
+                    mark.rtp_timestamp,
+                )
+                continue
+            await send_json({"event": "error", "detail": "unsupported live action"})
     except WebSocketDisconnect:
         pass
     except Exception:
         try:
-            await websocket.send_json({"event": "error", "detail": "live session failed"})
+            await send_json({"event": "error", "detail": "live session failed"})
         except Exception:
             pass
     finally:
+        tasks = [task for task in (timing_task, telemetry_task) if task is not None]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
         if session is not None:
             await close_peer(session.session_id)
 

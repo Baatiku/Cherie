@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import time
+from typing import Callable
 
 from aiortc import MediaStreamTrack, RTCConfiguration, RTCIceServer, RTCPeerConnection, RTCSessionDescription
 from aiortc.mediastreams import MediaStreamError
 
+from .frame_correlation import FrameCorrelator
 from .ice import current_ice_config
 from .models import WebRtcAnswer, WebRtcOffer
 from .processor import processor
@@ -16,11 +18,55 @@ _peers: dict[str, RTCPeerConnection] = {}
 _return_tracks: dict[str, "LowLatencyVideoTrack"] = {}
 
 
+def _rtp_timestamp(frame) -> int | None:
+    if frame.pts is None:
+        return None
+    return int(frame.pts) & 0xFFFFFFFF
+
+
+class FrameTimingBridge:
+    def __init__(self, publish: Callable[[dict], None]):
+        self.correlator = FrameCorrelator()
+        self.publish = publish
+
+    def _emit(self, reports: list[dict]) -> None:
+        for report in reports:
+            self.publish(report)
+
+    def note_capture(
+        self,
+        sequence: int,
+        capture_timestamp_ns: int,
+        capture_elapsed_ns: int,
+        rtp_guess: int,
+    ) -> None:
+        self._emit(
+            self.correlator.note_capture(
+                sequence,
+                capture_timestamp_ns,
+                capture_elapsed_ns,
+                rtp_guess,
+                time.perf_counter_ns(),
+            )
+        )
+
+    def note_received(self, frame, received_ns: int) -> None:
+        rtp = _rtp_timestamp(frame)
+        if rtp is not None:
+            self._emit(self.correlator.note_frame_received(rtp, received_ns))
+
+    def note_processed(self, frame, processor_started_ns: int, processor_ended_ns: int) -> None:
+        rtp = _rtp_timestamp(frame)
+        if rtp is not None:
+            self._emit(self.correlator.note_processed(rtp, processor_started_ns, processor_ended_ns))
+
+
 class LatestFrameSource:
     """Continuously drains aiortc and retains only the freshest decoded frame."""
 
-    def __init__(self, source: MediaStreamTrack):
+    def __init__(self, source: MediaStreamTrack, timing: FrameTimingBridge | None = None):
         self.source = source
+        self.timing = timing
         self._condition = asyncio.Condition()
         self._latest = None
         self._latest_sequence = 0
@@ -32,7 +78,9 @@ class LatestFrameSource:
         try:
             while True:
                 frame = await self.source.recv()
-                received_at = time.perf_counter()
+                received_at = time.perf_counter_ns()
+                if self.timing is not None:
+                    self.timing.note_received(frame, received_at)
                 async with self._condition:
                     if self._latest_sequence > self._delivered_sequence:
                         input_overwrite_counter.increment()
@@ -64,27 +112,33 @@ class LatestFrameSource:
 class LowLatencyVideoTrack(MediaStreamTrack):
     kind = "video"
 
-    def __init__(self, source: MediaStreamTrack, state):
+    def __init__(self, source: MediaStreamTrack, state, timing: FrameTimingBridge | None = None):
         super().__init__()
         self.source = source
         self.state = state
         self.stream_key = state.session_id
-        self.latest = LatestFrameSource(source)
+        self.timing = timing
+        self.latest = LatestFrameSource(source, timing)
         self.sequence = 0
         self._closed = False
 
     async def recv(self):
-        wait_started = time.perf_counter()
+        wait_started = time.perf_counter_ns()
         sequence, frame, received_at = await self.latest.next(self.sequence)
-        media_wait_window.add((time.perf_counter() - wait_started) * 1000.0)
-        input_age_window.add((time.perf_counter() - received_at) * 1000.0)
+        processor_started = time.perf_counter_ns()
+        media_wait_window.add((processor_started - wait_started) / 1_000_000.0)
+        input_age_window.add((processor_started - received_at) / 1_000_000.0)
         self.sequence = sequence
-        return await processor.process(
+        result = await processor.process(
             frame,
             self.state.effect,
             stream_key=self.stream_key,
             profile=self.state.profile,
         )
+        processor_ended = time.perf_counter_ns()
+        if self.timing is not None:
+            self.timing.note_processed(frame, processor_started, processor_ended)
+        return result
 
     def stop(self) -> None:
         if self._closed:
@@ -118,7 +172,7 @@ async def close_peer(session_id: str) -> None:
         await pc.close()
 
 
-async def accept_offer(body: WebRtcOffer) -> WebRtcAnswer:
+async def accept_offer(body: WebRtcOffer, timing_bridge: FrameTimingBridge | None = None) -> WebRtcAnswer:
     state = registry.authenticate(body.session_id, body.token)
     if state is None:
         raise PermissionError("invalid or expired session")
@@ -130,7 +184,7 @@ async def accept_offer(body: WebRtcOffer) -> WebRtcAnswer:
     @pc.on("track")
     def on_track(track):
         if track.kind == "video":
-            returned_track = LowLatencyVideoTrack(track, state)
+            returned_track = LowLatencyVideoTrack(track, state, timing_bridge)
             _return_tracks[state.session_id] = returned_track
             pc.addTrack(returned_track)
 

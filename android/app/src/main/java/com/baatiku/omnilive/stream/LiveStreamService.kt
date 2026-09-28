@@ -7,7 +7,7 @@ import com.baatiku.omnilive.BuildConfig
 
 class LiveStreamService:Service() {
     companion object { const val CHANNEL_ID="omnilive_stream"; const val NOTIFICATION_ID=1001 }
-    private var client:WebRtcClient? = null
+    private var client:WebRtcClient?=null
 
     override fun onCreate() {
         super.onCreate()
@@ -16,8 +16,9 @@ class LiveStreamService:Service() {
         )
     }
 
-    override fun onStartCommand(intent:Intent?, flags:Int, startId:Int):Int {
+    override fun onStartCommand(intent:Intent?,flags:Int,startId:Int):Int {
         val profileName=intent?.getStringExtra("profile") ?: "balanced"
+        val effectName=intent?.getStringExtra("effect") ?: "original"
         val backendUrl=intent?.getStringExtra("backend_url") ?: BuildConfig.DEFAULT_BACKEND_URL
         val profile=QualityProfile.fromName(profileName)
         val text=profile.width.toString()+"×"+profile.height+" @ "+profile.cameraFps+" fps"
@@ -27,7 +28,7 @@ class LiveStreamService:Service() {
         startForeground(NOTIFICATION_ID,n)
 
         if(client==null) {
-            client=WebRtcClient(this,backendUrl,profileName)
+            client=WebRtcClient(this,backendUrl,profileName,effectName)
             client!!.start()
         }
         return START_NOT_STICKY

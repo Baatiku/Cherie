@@ -1,8 +1,7 @@
 from __future__ import annotations
-import asyncio
-import time
-from aiortc import MediaStreamTrack, RTCPeerConnection, RTCSessionDescription
-from .models import WebRtcAnswer, WebRtcOffer
+import asyncio,time
+from aiortc import MediaStreamTrack,RTCPeerConnection,RTCSessionDescription
+from .models import WebRtcAnswer,WebRtcOffer
 from .processor import processor
 from .session import registry
 from .telemetry import media_wait_window
@@ -12,9 +11,10 @@ _peers:set[RTCPeerConnection]=set()
 class LowLatencyVideoTrack(MediaStreamTrack):
     kind="video"
 
-    def __init__(self,source:MediaStreamTrack):
+    def __init__(self,source:MediaStreamTrack,effect):
         super().__init__()
         self.source=source
+        self.effect=effect
         self.sequence=0
 
     async def recv(self):
@@ -22,10 +22,11 @@ class LowLatencyVideoTrack(MediaStreamTrack):
         frame=await self.source.recv()
         media_wait_window.add((time.perf_counter()-wait_started)*1000.0)
         self.sequence+=1
-        return await processor.process(frame)
+        return await processor.process(frame,self.effect)
 
 async def accept_offer(body:WebRtcOffer)->WebRtcAnswer:
-    if registry.authenticate(body.session_id,body.token) is None:
+    state=registry.authenticate(body.session_id,body.token)
+    if state is None:
         raise PermissionError("invalid or expired session")
 
     pc=RTCPeerConnection()
@@ -34,7 +35,7 @@ async def accept_offer(body:WebRtcOffer)->WebRtcAnswer:
     @pc.on("track")
     def on_track(track):
         if track.kind=="video":
-            pc.addTrack(LowLatencyVideoTrack(track))
+            pc.addTrack(LowLatencyVideoTrack(track,state.effect))
 
         @track.on("ended")
         async def on_ended():

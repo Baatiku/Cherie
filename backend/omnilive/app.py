@@ -1,16 +1,17 @@
 import time
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI,Header,HTTPException
 from .config import settings
 from .frame_policy import decide_frame
+from .model_runtime import runtime
 from .models import (
-    CreateSessionRequest, FrameDecision, FrameMeta, SessionResponse,
-    WebRtcAnswer, WebRtcOffer, IceConfig, IceServer
+    CreateSessionRequest,FrameDecision,FrameMeta,SessionResponse,
+    WebRtcAnswer,WebRtcOffer,IceConfig,IceServer
 )
 from .session import registry
 from .telemetry import media_wait_window,processor_window
 from .webrtc import accept_offer,close_all_peers
 
-app=FastAPI(title="OmniLive",version="0.5.0")
+app=FastAPI(title="OmniLive",version="0.6.0")
 
 def telemetry_payload():
     media=media_wait_window.snapshot()
@@ -22,6 +23,9 @@ def telemetry_payload():
         "processor_p50_ms":proc.p50_ms,
         "processor_p95_ms":proc.p95_ms,
         "processor_samples":proc.count,
+        "model_loaded":runtime.loaded,
+        "model_providers":runtime.providers,
+        "model_id":settings.model_id,
     }
 
 @app.get("/health")
@@ -42,7 +46,7 @@ def ice_config():
 
 @app.post("/v1/sessions",response_model=SessionResponse)
 def create_session(body:CreateSessionRequest):
-    return registry.create(body.profile,body.region_hint)
+    return registry.create(body.profile,body.effect,body.region_hint)
 
 @app.post("/v1/webrtc/offer",response_model=WebRtcAnswer)
 async def webrtc_offer(body:WebRtcOffer):

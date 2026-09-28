@@ -31,6 +31,7 @@ class MainActivity:ComponentActivity() {
             MaterialTheme {
                 var running by remember { mutableStateOf(false) }
                 var profile by remember { mutableStateOf("balanced") }
+                var effect by remember { mutableStateOf("original") }
                 var backendUrl by remember {
                     mutableStateOf(getSharedPreferences("omnilive",MODE_PRIVATE)
                         .getString("backend_url",BuildConfig.DEFAULT_BACKEND_URL) ?: BuildConfig.DEFAULT_BACKEND_URL)
@@ -53,9 +54,17 @@ class MainActivity:ComponentActivity() {
                             modifier=Modifier.fillMaxWidth()
                         )
 
+                        Text("Quality")
                         Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
                             listOf("low_latency","balanced","high").forEach { item ->
                                 FilterChip(selected=profile==item,onClick={profile=item},label={Text(item)})
+                            }
+                        }
+
+                        Text("Visual effect")
+                        Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+                            listOf("original","soft_focus","monochrome","pixelate").forEach { item ->
+                                FilterChip(selected=effect==item,onClick={effect=item},label={Text(item)})
                             }
                         }
 
@@ -65,6 +74,7 @@ class MainActivity:ComponentActivity() {
                                     this@MainActivity,
                                     Intent(this@MainActivity,LiveStreamService::class.java)
                                         .putExtra("profile",profile)
+                                        .putExtra("effect",effect)
                                         .putExtra("backend_url",backendUrl)
                                 )
                             } else stopService(Intent(this@MainActivity,LiveStreamService::class.java))

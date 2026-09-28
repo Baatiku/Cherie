@@ -1,0 +1,98 @@
+from __future__ import annotations
+import os
+from pathlib import Path
+from threading import Lock
+import numpy as np
+
+from .config import settings
+
+class OnnxRuntime:
+    def __init__(self):
+        self._lock=Lock()
+        self._session=None
+        self._model_path=None
+        self._providers=[]
+
+    @property
+    def loaded(self)->bool:
+        return self._session is not None
+
+    @property
+    def providers(self)->list[str]:
+        return list(self._providers)
+
+    def _resolve_path(self)->Path|None:
+        model_id=(settings.model_id or "").strip()
+        if not model_id or model_id=="none":
+            return None
+        root=Path(settings.model_root).resolve()
+        candidate=(root/model_id).resolve()
+        if root not in candidate.parents and candidate!=root:
+            raise ValueError("model path escapes configured model root")
+        if candidate.is_dir():
+            matches=sorted(candidate.glob("*.onnx"))
+            if len(matches)!=1:
+                raise RuntimeError("model directory must contain exactly one .onnx file")
+            candidate=matches[0]
+        if candidate.suffix.lower()!=".onnx":
+            candidate=candidate.with_suffix(".onnx")
+        if not candidate.exists():
+            return None
+        return candidate
+
+    def load(self):
+        path=self._resolve_path()
+        if path is None:
+            return None
+        with self._lock:
+            if self._session is not None and self._model_path==path:
+                return self._session
+            import onnxruntime as ort
+            available=ort.get_available_providers()
+            preferred=[
+                p for p in ("TensorrtExecutionProvider","CUDAExecutionProvider","CPUExecutionProvider")
+                if p in available
+            ]
+            if not preferred:
+                preferred=["CPUExecutionProvider"]
+            self._session=ort.InferenceSession(str(path),providers=preferred)
+            self._model_path=path
+            self._providers=list(self._session.get_providers())
+            return self._session
+
+    def run_image(self,rgb:np.ndarray)->np.ndarray:
+        session=self.load()
+        if session is None:
+            return rgb
+        input_meta=session.get_inputs()[0]
+        shape=input_meta.shape
+        if len(shape)!=4:
+            raise RuntimeError("custom model input must be 4D NCHW or NHWC")
+        h,w=rgb.shape[:2]
+        import cv2
+
+        if shape[1]==3 or shape[1]=="3":
+            target_h=shape[2] if isinstance(shape[2],int) else h
+            target_w=shape[3] if isinstance(shape[3],int) else w
+            x=cv2.resize(rgb,(target_w,target_h)).astype(np.float32)/255.0
+            x=np.transpose(x,(2,0,1))[None,...]
+            nchw=True
+        else:
+            target_h=shape[1] if isinstance(shape[1],int) else h
+            target_w=shape[2] if isinstance(shape[2],int) else w
+            x=cv2.resize(rgb,(target_w,target_h)).astype(np.float32)/255.0
+            x=x[None,...]
+            nchw=False
+
+        y=session.run(None,{input_meta.name:x})[0]
+        if y.ndim==4:
+            y=y[0]
+        if nchw and y.ndim==3 and y.shape[0] in (1,3,4):
+            y=np.transpose(y,(1,2,0))
+        y=np.clip(y,0.0,1.0)
+        if y.shape[-1]==1:
+            y=np.repeat(y,3,axis=-1)
+        y=(y[...,:3]*255.0).astype(np.uint8)
+        return cv2.resize(y,(w,h),interpolation=cv2.INTER_LINEAR)
+
+runtime=OnnxRuntime()

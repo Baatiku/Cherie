@@ -18,10 +18,11 @@ object SessionApi {
         }
     }
 
-    fun create(baseUrl:String,profile:String):LiveSession {
+    fun create(baseUrl:String,profile:String,effect:String):LiveSession {
         val conn=connection(baseUrl.trimEnd('/')+"/v1/sessions","POST")
         conn.doOutput=true
-        conn.outputStream.use { it.write(JSONObject().put("profile",profile).toString().toByteArray()) }
+        val body=JSONObject().put("profile",profile).put("effect",effect)
+        conn.outputStream.use { it.write(body.toString().toByteArray()) }
         check(conn.responseCode in 200..299) { "Session creation failed: "+conn.responseCode }
         val json=JSONObject(conn.inputStream.bufferedReader().use { it.readText() })
         return LiveSession(json.getString("session_id"),json.getString("token"),json.getLong("expires_at"))

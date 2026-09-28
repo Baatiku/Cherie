@@ -12,6 +12,7 @@ class WebRtcClient(
     private val context:Context,
     private val baseUrl:String,
     initialProfileName:String,
+    private val effectName:String,
     private val remoteSink:VideoSink=ReturnedVideoBus,
 ) {
     private val scope=CoroutineScope(SupervisorJob()+Dispatchers.IO)
@@ -43,7 +44,7 @@ class WebRtcClient(
         LiveTelemetry.update { it.copy(connectionState="starting",lastError=null) }
         scope.launch {
             try {
-                session=SessionApi.create(baseUrl,activeProfileName)
+                session=SessionApi.create(baseUrl,activeProfileName,effectName)
                 iceServers=SessionApi.iceServers(baseUrl).map { cfg ->
                     PeerConnection.IceServer.builder(cfg.urls)
                         .setUsername(cfg.username)
@@ -87,7 +88,6 @@ class WebRtcClient(
         peer?.close()
         peer=createPeer()
         peer!!.addTrack(localTrack!!,listOf("omnilive"))
-
         peer!!.createOffer(object:SimpleSdpObserver() {
             override fun onCreateSuccess(desc:SessionDescription) {
                 peer?.setLocalDescription(object:SimpleSdpObserver(){},desc)
@@ -107,8 +107,7 @@ class WebRtcClient(
                     try {
                         backendP95Ms=SessionApi.telemetry(baseUrl).processorP95Ms
                         LiveTelemetry.update { it.copy(backendProcessorP95Ms=backendP95Ms) }
-                    } catch(_:Throwable) {
-                    }
+                    } catch(_:Throwable) {}
                 }
             }
         }
@@ -146,7 +145,6 @@ class WebRtcClient(
             var packetsLost:Long?=null
             var packetsReceived:Long?=null
             var framesReceived:Long?=null
-
             report.statsMap.values.forEach { stat ->
                 val members=stat.members
                 when(stat.type) {
@@ -168,15 +166,9 @@ class WebRtcClient(
                     }
                 }
             }
-
             LiveTelemetry.update {
-                it.copy(
-                    rttMs=rttMs ?: it.rttMs,
-                    packetsLost=packetsLost ?: it.packetsLost,
-                    framesReceived=framesReceived ?: it.framesReceived
-                )
+                it.copy(rttMs=rttMs ?: it.rttMs,packetsLost=packetsLost ?: it.packetsLost,framesReceived=framesReceived ?: it.framesReceived)
             }
-
             val oldLost=previousLost
             val oldReceived=previousReceived
             if(rttMs!=null && packetsLost!=null && packetsReceived!=null && oldLost!=null && oldReceived!=null) {
@@ -201,8 +193,7 @@ class WebRtcClient(
         override fun onSignalingChange(state:PeerConnection.SignalingState) {}
         override fun onIceConnectionChange(state:PeerConnection.IceConnectionState) {
             LiveTelemetry.update { it.copy(iceState=state.name.lowercase()) }
-            if(state==PeerConnection.IceConnectionState.FAILED ||
-                state==PeerConnection.IceConnectionState.DISCONNECTED) scheduleReconnect()
+            if(state==PeerConnection.IceConnectionState.FAILED || state==PeerConnection.IceConnectionState.DISCONNECTED) scheduleReconnect()
         }
         override fun onConnectionChange(state:PeerConnection.PeerConnectionState) {
             LiveTelemetry.update { it.copy(connectionState=state.name.lowercase()) }
@@ -211,8 +202,7 @@ class WebRtcClient(
                 reconnectJob?.cancel()
                 reconnectJob=null
             }
-            if(state==PeerConnection.PeerConnectionState.FAILED ||
-                state==PeerConnection.PeerConnectionState.DISCONNECTED) scheduleReconnect()
+            if(state==PeerConnection.PeerConnectionState.FAILED || state==PeerConnection.PeerConnectionState.DISCONNECTED) scheduleReconnect()
         }
         override fun onIceConnectionReceivingChange(receiving:Boolean) {}
         override fun onIceGatheringChange(state:PeerConnection.IceGatheringState) {
@@ -228,9 +218,7 @@ class WebRtcClient(
                                 override fun onSetFailure(error:String) { fail(error) }
                             },SessionDescription(SessionDescription.Type.fromCanonicalForm(answer.first),answer.second))
                         }
-                    } catch(t:Throwable) {
-                        fail(t.message ?: t.javaClass.simpleName)
-                    }
+                    } catch(t:Throwable) { fail(t.message ?: t.javaClass.simpleName) }
                 }
             }
         }

@@ -23,11 +23,16 @@
 ## Phase 3 — GPU visual processor
 - [x] GPU-resident processor contract
 - [x] processor p50/p95 timing
-- [x] passthrough processor for transport benchmarks
-- [ ] ONNX Runtime CUDA/TensorRT image
+- [x] Modal Volume mounted at /models
+- [x] ONNX Runtime GPU dependency
+- [x] TensorRT/CUDA/CPU provider selection
+- [x] lazy model loading/cache
+- [x] generic NCHW/NHWC image-to-image adapter
+- [x] built-in original/soft-focus/monochrome/pixelate effects
+- [x] per-session effect selection
+- [x] Android effect controls
 - [ ] detector + landmark tracker
 - [ ] temporal crop tracking
-- [ ] visual-effects model adapter
 - [ ] masks/color correction/enhancement
 
 ## Phase 4 — rooted Android lab adapter

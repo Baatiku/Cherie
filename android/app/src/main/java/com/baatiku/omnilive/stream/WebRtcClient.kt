@@ -26,6 +26,7 @@ class WebRtcClient(
     private val baseUrl:String,
     initialProfileName:String,
     private val effectName:String,
+    private val referenceImagePath:String?=null,
     private val remoteSink:VideoSink=ReturnedVideoBus,
 ) {
     private val scope=CoroutineScope(SupervisorJob()+Dispatchers.IO)
@@ -165,6 +166,10 @@ class WebRtcClient(
                 frameCorrelationMisses=0,
                 frameCorrelationOutOfOrder=0,
                 backendFrameTotalMs=null,
+                referenceImageStatus=if(referenceImagePath.isNullOrBlank()) "none" else "selected",
+                referenceImageWidth=null,
+                referenceImageHeight=null,
+                referenceImageError=null,
                 lastError=null
             )
         }
@@ -310,6 +315,35 @@ class WebRtcClient(
         }
     }
 
+    private fun sendReferenceImage(webSocket:WebSocket) {
+        val path=referenceImagePath
+        if(path.isNullOrBlank()) {
+            LiveTelemetry.update { it.copy(referenceImageStatus="none",referenceImageError=null) }
+            return
+        }
+        scope.launch {
+            try {
+                val payload=ReferenceUploadPayload.fromFile(path)
+                LiveTelemetry.update { it.copy(referenceImageStatus="uploading",referenceImageError=null) }
+                val sent=webSocket.send(
+                    JSONObject()
+                        .put("action","reference_image")
+                        .put("mime_type","image/jpeg")
+                        .put("data_base64",payload.dataBase64)
+                        .toString()
+                )
+                if(!sent) throw IllegalStateException("Reference image WebSocket send was rejected")
+            } catch(t:Throwable) {
+                LiveTelemetry.update {
+                    it.copy(
+                        referenceImageStatus="error",
+                        referenceImageError=t.message ?: "Reference image upload failed"
+                    )
+                }
+            }
+        }
+    }
+
     private fun openLiveSocket(sdp:String) {
         if(stopped.get()) return
         closeLiveSocket("replace")
@@ -344,6 +378,7 @@ class WebRtcClient(
                             val answerSdp=json.getString("sdp")
                             val answerType=json.optString("type","answer")
                             frameMarksEnabled=true
+                            sendReferenceImage(webSocket)
                             scope.launch(Dispatchers.Main) {
                                 peer?.setRemoteDescription(object:SimpleSdpObserver(){
                                     override fun onSetFailure(error:String) { fail(error) }
@@ -364,6 +399,26 @@ class WebRtcClient(
                             )
                             frameLatency.onTimingReport(report,SystemClock.elapsedRealtimeNanos())?.let {
                                 applyFrameLatency(it)
+                            }
+                        }
+                        "reference_image" -> {
+                            val status=json.optString("status","error")
+                            if(status=="ready") {
+                                LiveTelemetry.update {
+                                    it.copy(
+                                        referenceImageStatus="ready",
+                                        referenceImageWidth=json.optInt("width",0).takeIf { value -> value>0 },
+                                        referenceImageHeight=json.optInt("height",0).takeIf { value -> value>0 },
+                                        referenceImageError=null
+                                    )
+                                }
+                            } else {
+                                LiveTelemetry.update {
+                                    it.copy(
+                                        referenceImageStatus="error",
+                                        referenceImageError=json.optString("detail","Reference image upload failed")
+                                    )
+                                }
                             }
                         }
                         "profile" -> {

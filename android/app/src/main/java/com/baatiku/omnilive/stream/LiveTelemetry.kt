@@ -42,6 +42,10 @@ data class LiveTelemetryState(
     val batteryCharging:Boolean?=null,
     val batteryTemperatureC:Double?=null,
     val thermalStatus:String="unknown",
+    val referenceImageStatus:String="none",
+    val referenceImageWidth:Int?=null,
+    val referenceImageHeight:Int?=null,
+    val referenceImageError:String?=null,
     val lastError:String?=null
 )
 

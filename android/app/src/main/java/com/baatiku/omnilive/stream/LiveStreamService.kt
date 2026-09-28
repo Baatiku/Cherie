@@ -22,6 +22,7 @@ class LiveStreamService:Service() {
         val profileName=intent?.getStringExtra("profile") ?: "balanced"
         val effectName=intent?.getStringExtra("effect") ?: "original"
         val backendUrl=intent?.getStringExtra("backend_url") ?: BuildConfig.DEFAULT_BACKEND_URL
+        val referenceImagePath=intent?.getStringExtra("reference_image_path")
         val profile=QualityProfile.fromName(profileName)
         val text=profile.width.toString()+"×"+profile.height+" @ "+profile.cameraFps+" fps"
         val n=Notification.Builder(this,CHANNEL_ID)
@@ -30,7 +31,7 @@ class LiveStreamService:Service() {
         startForeground(NOTIFICATION_ID,n)
 
         if(client==null) {
-            client=WebRtcClient(this,backendUrl,profileName,effectName)
+            client=WebRtcClient(this,backendUrl,profileName,effectName,referenceImagePath)
             client!!.start()
         }
         return START_NOT_STICKY

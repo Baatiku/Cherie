@@ -107,6 +107,10 @@ final class TargetSurfaceRedirector {
         return !REPLACEMENTS.isEmpty();
     }
 
+    static synchronized boolean hasUnsafeTargets() {
+        return !UNSAFE_TARGETS.isEmpty();
+    }
+
     static synchronized boolean isPhysicalSessionLocked() {
         return sessionMode == SESSION_PHYSICAL;
     }

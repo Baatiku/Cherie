@@ -265,6 +265,145 @@ class FallbackRegionDetector:
         return self.fallback.detect(rgb)
 
 
+class YoloPersonDetector:
+    """Lazy person detector for common Ultralytics/YOLO ONNX export layouts."""
+
+    name = "yolo_person_onnx"
+
+    def __init__(
+        self,
+        model_id: str,
+        confidence: float = 0.4,
+        nms_threshold: float = 0.45,
+        max_regions: int = 4,
+    ):
+        self.runtime = _LazyVisionSession(model_id)
+        self.confidence = max(0.01, min(0.99, float(confidence)))
+        self.nms_threshold = max(0.05, min(0.95, float(nms_threshold)))
+        self.max_regions = max(1, int(max_regions))
+        self.operational = False
+
+    @property
+    def available(self) -> bool:
+        return self.runtime.configured_file_exists
+
+    @property
+    def providers(self) -> list[str]:
+        return self.runtime.providers
+
+    @property
+    def last_error(self) -> str | None:
+        return self.runtime.last_error
+
+    @staticmethod
+    def _prediction_rows(output: np.ndarray) -> np.ndarray:
+        array = np.asarray(output).squeeze()
+        if array.ndim == 1:
+            array = array.reshape(1, -1)
+        if array.ndim != 2:
+            raise ValueError("YOLO output must reduce to a 2D prediction matrix")
+        if array.shape[0] <= 128 and array.shape[1] > array.shape[0]:
+            array = array.T
+        return array.astype(np.float32)
+
+    @staticmethod
+    def _letterbox(rgb: np.ndarray, target_w: int, target_h: int):
+        height, width = rgb.shape[:2]
+        scale = min(target_w / float(width), target_h / float(height))
+        resized_w = max(1, int(round(width * scale)))
+        resized_h = max(1, int(round(height * scale)))
+        resized = cv2.resize(rgb, (resized_w, resized_h), interpolation=cv2.INTER_LINEAR)
+        canvas = np.full((target_h, target_w, 3), 114, dtype=np.uint8)
+        pad_x = (target_w - resized_w) // 2
+        pad_y = (target_h - resized_h) // 2
+        canvas[pad_y : pad_y + resized_h, pad_x : pad_x + resized_w] = resized
+        return canvas, scale, pad_x, pad_y
+
+    def _decode_rows(
+        self,
+        rows: np.ndarray,
+        *,
+        frame_width: int,
+        frame_height: int,
+        scale: float,
+        pad_x: int,
+        pad_y: int,
+    ) -> list[Region]:
+        regions: list[Region] = []
+        for row in rows:
+            if len(row) < 6:
+                continue
+
+            end_to_end = len(row) == 6 and row[2] > row[0] and row[3] > row[1]
+            if end_to_end:
+                x0, y0, x1, y1, score, class_id = [float(value) for value in row[:6]]
+                if int(round(class_id)) != 0 or score < self.confidence:
+                    continue
+            else:
+                cx, cy, width, height = [float(value) for value in row[:4]]
+                if len(row) >= 85:
+                    objectness = float(row[4])
+                    class_scores = row[5:]
+                    person_score = float(class_scores[0]) if len(class_scores) else 0.0
+                    score = objectness * person_score
+                else:
+                    class_scores = row[4:]
+                    score = float(class_scores[0]) if len(class_scores) else 0.0
+                if score < self.confidence:
+                    continue
+                x0 = cx - width * 0.5
+                y0 = cy - height * 0.5
+                x1 = cx + width * 0.5
+                y1 = cy + height * 0.5
+
+            x0 = (x0 - pad_x) / max(scale, 1e-6)
+            y0 = (y0 - pad_y) / max(scale, 1e-6)
+            x1 = (x1 - pad_x) / max(scale, 1e-6)
+            y1 = (y1 - pad_y) / max(scale, 1e-6)
+            region = Region(
+                int(round(x0)),
+                int(round(y0)),
+                int(round(x1 - x0)),
+                int(round(y1 - y0)),
+                float(score),
+            ).clamp(frame_width, frame_height)
+            if region is not None:
+                regions.append(region)
+        return _nms(regions, self.nms_threshold)[: self.max_regions]
+
+    def detect(self, rgb: np.ndarray) -> list[Region]:
+        if rgb.size == 0:
+            return []
+        session = self.runtime.load()
+        self.operational = session is not None
+        if session is None:
+            return []
+
+        input_meta = session.get_inputs()[0]
+        shape = input_meta.shape
+        target_h = int(shape[2]) if len(shape) == 4 and isinstance(shape[2], int) else 640
+        target_w = int(shape[3]) if len(shape) == 4 and isinstance(shape[3], int) else 640
+        target_h = max(64, target_h)
+        target_w = max(64, target_w)
+
+        letterboxed, scale, pad_x, pad_y = self._letterbox(rgb, target_w, target_h)
+        tensor = letterboxed.astype(np.float32) / 255.0
+        tensor = np.transpose(tensor, (2, 0, 1))[None, ...]
+        outputs = session.run(None, {input_meta.name: tensor})
+        if not outputs:
+            self.operational = False
+            return []
+        rows = self._prediction_rows(np.asarray(outputs[0]))
+        return self._decode_rows(
+            rows,
+            frame_width=rgb.shape[1],
+            frame_height=rgb.shape[0],
+            scale=scale,
+            pad_x=pad_x,
+            pad_y=pad_y,
+        )
+
+
 @dataclass(frozen=True)
 class SemanticLandmarks:
     points: np.ndarray
@@ -431,6 +570,23 @@ def build_region_detector(max_regions: int = 1) -> RegionDetector:
     return FallbackRegionDetector(primary, fallback)
 
 
+def build_person_detector(max_regions: int = 4) -> RegionDetector | None:
+    backend = settings.person_detector_backend
+    if backend in {"none", "off", "disabled"}:
+        return None
+    if backend not in {"auto", "yolo"}:
+        return None
+    detector = YoloPersonDetector(
+        settings.person_detector_model,
+        confidence=settings.person_detector_confidence,
+        nms_threshold=settings.person_detector_nms,
+        max_regions=max_regions,
+    )
+    if backend == "auto" and not detector.available:
+        return None
+    return detector
+
+
 def build_landmark_provider() -> SemanticLandmarkProvider | None:
     backend = settings.landmark_backend
     if backend in {"none", "off", "disabled"}:
@@ -443,10 +599,15 @@ def build_landmark_provider() -> SemanticLandmarkProvider | None:
     return provider
 
 
-def vision_status(detector: RegionDetector, landmark_provider: SemanticLandmarkProvider | None) -> dict:
+def vision_status(
+    detector: RegionDetector,
+    landmark_provider: SemanticLandmarkProvider | None,
+    person_detector: RegionDetector | None = None,
+) -> dict:
     detector_primary = getattr(detector, "primary", detector)
     landmark_runtime = getattr(landmark_provider, "runtime", None)
     detector_runtime = getattr(detector_primary, "runtime", None)
+    person_runtime = getattr(person_detector, "runtime", None)
     return {
         "detector_backend": detector.name,
         "detector_model": detector_runtime.status() if detector_runtime is not None else None,
@@ -454,5 +615,12 @@ def vision_status(detector: RegionDetector, landmark_provider: SemanticLandmarkP
         "landmark_model": landmark_runtime.status() if landmark_runtime is not None else None,
         "face_alignment_enabled": settings.face_alignment_enabled,
         "face_alignment_size": settings.face_alignment_size,
-        "person_detector_model": settings.person_detector_model,
+        "person_detector_backend": getattr(person_detector, "name", "none"),
+        "person_detector_model": person_runtime.status() if person_runtime is not None else {
+            "model_id": settings.person_detector_model,
+            "configured_file_exists": False,
+            "loaded": False,
+            "providers": [],
+            "last_error": None,
+        },
     }

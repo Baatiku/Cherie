@@ -8,6 +8,7 @@ from omnilive.vision import (
     FallbackRegionDetector,
     SemanticLandmarks,
     align_face,
+    YoloPersonDetector,
     resolve_vision_model_path,
 )
 
@@ -72,3 +73,47 @@ def test_flat_68x3_landmarks_are_not_misread_as_102x2():
     points = OnnxFaceLandmarkProvider._points(np.zeros(68 * 3, dtype=np.float32))
     assert points is not None
     assert points.shape == (68, 3)
+
+
+def test_yolo_prediction_rows_transpose_feature_first_output():
+    output = np.zeros((1, 84, 5), dtype=np.float32)
+    rows = YoloPersonDetector._prediction_rows(output)
+    assert rows.shape == (5, 84)
+
+
+def test_yolo_person_decoder_supports_ultralytics_raw_output():
+    detector = YoloPersonDetector("unused.onnx", confidence=0.4, max_regions=2)
+    row = np.zeros(84, dtype=np.float32)
+    row[0:4] = [320.0, 320.0, 200.0, 300.0]
+    row[4] = 0.9
+    regions = detector._decode_rows(
+        row.reshape(1, -1),
+        frame_width=640,
+        frame_height=640,
+        scale=1.0,
+        pad_x=0,
+        pad_y=0,
+    )
+    assert len(regions) == 1
+    assert regions[0].x == 220
+    assert regions[0].y == 170
+    assert regions[0].width == 200
+    assert regions[0].height == 300
+
+
+def test_yolo_person_decoder_supports_end_to_end_output():
+    detector = YoloPersonDetector("unused.onnx", confidence=0.4, max_regions=2)
+    rows = np.array([
+        [100.0, 120.0, 300.0, 500.0, 0.85, 0.0],
+        [120.0, 130.0, 280.0, 480.0, 0.95, 2.0],
+    ], dtype=np.float32)
+    regions = detector._decode_rows(
+        rows,
+        frame_width=640,
+        frame_height=640,
+        scale=1.0,
+        pad_x=0,
+        pad_y=0,
+    )
+    assert len(regions) == 1
+    assert regions[0].score == pytest.approx(0.85)

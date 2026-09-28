@@ -40,9 +40,12 @@ class Settings:
     )
     face_alignment_enabled: bool = _bool("OMNILIVE_FACE_ALIGNMENT_ENABLED", False)
     face_alignment_size: int = int(os.getenv("OMNILIVE_FACE_ALIGNMENT_SIZE", "256"))
+    person_detector_backend: str = os.getenv("OMNILIVE_PERSON_DETECTOR_BACKEND", "auto").strip().lower()
     person_detector_model: str = os.getenv(
         "OMNILIVE_PERSON_DETECTOR_MODEL", "detectors/person_yolo.onnx"
     )
+    person_detector_confidence: float = float(os.getenv("OMNILIVE_PERSON_DETECTOR_CONFIDENCE", "0.40"))
+    person_detector_nms: float = float(os.getenv("OMNILIVE_PERSON_DETECTOR_NMS", "0.45"))
     region_padding: float = float(os.getenv("OMNILIVE_REGION_PADDING", "0.22"))
     tracker_min_confidence: float = float(os.getenv("OMNILIVE_TRACKER_MIN_CONFIDENCE", "0.22"))
     processor_context_ttl_seconds: int = int(os.getenv("OMNILIVE_PROCESSOR_CONTEXT_TTL_SECONDS", "30"))

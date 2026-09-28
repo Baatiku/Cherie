@@ -31,6 +31,7 @@ from .vision import (
     SemanticLandmarks,
     align_face,
     build_landmark_provider,
+    build_person_detector,
     build_region_detector,
     vision_status as vision_provider_status,
 )
@@ -110,6 +111,7 @@ class LocalizedTemporalProcessor:
     ):
         self.detector = detector or build_region_detector(max_regions=1)
         self.landmark_provider = landmark_provider if landmark_provider is not None else build_landmark_provider()
+        self.person_detector = build_person_detector()
         self.visual = visual or VisualProcessor()
         self._contexts: dict[str, StreamContext] = {}
         self._contexts_lock = Lock()
@@ -121,7 +123,7 @@ class LocalizedTemporalProcessor:
         )
 
     def vision_status(self) -> dict:
-        return vision_provider_status(self.detector, self.landmark_provider)
+        return vision_provider_status(self.detector, self.landmark_provider, self.person_detector)
 
     def _refresh_landmarks(self, context: StreamContext, rgb: np.ndarray, region: Region) -> None:
         if self.landmark_provider is None:

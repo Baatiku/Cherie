@@ -322,7 +322,11 @@ def health():
 
 @app.get("/v1/model")
 def model_status():
-    return runtime.status()
+    return {
+        "visual_model": runtime.status(),
+        "vision": processor.vision_status(),
+        "memory": runtime.memory_status(),
+    }
 
 
 @app.get("/v1/telemetry")

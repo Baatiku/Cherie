@@ -275,3 +275,61 @@ Rootlab APK:
 https://omnilive-apk-builder.onrender.com/omnilive-rootlab-debug.apk
 SHA-256 baa35e69b12bc0e8f5289cb80b9bd9b880fcf20028c4626e5148a7efe6f35b17
 ```
+
+
+## Zoom Camera2 redirection device-validation build
+
+Application source:
+
+```text
+1a2bccee1a342c141efa8e0966ade374739c3de6
+```
+
+This rootlab checkpoint moves beyond surface observation into an actual readiness-gated Camera2 substitution path for the Zoom package:
+
+- the broker reports redirect readiness only when the shared WebRTC EGL context exists and returned frames are live
+- `CaptureRequest.Builder.addTarget/removeTarget` surfaces and Camera2 session outputs are substituted as a coupled mapping
+- the physical camera is redirected to continuously drained PRIVATE `ImageReader` surfaces
+- Zoom's original output surfaces are reserved for OmniLive returned-frame rendering
+- legacy raw `Surface` lists plus `OutputConfiguration` and `SessionConfiguration` paths are supported
+- common post-create session mutation calls are mapped to the redirected outputs
+- pre-session physical/redirect decisions are sticky across multi-target request construction
+- an already-redirected session keeps its mapping across a temporary returned-stream gap instead of mixing physical and redirected targets
+- the broker logs the first successful EGL swap into every transferred target surface
+- the device smoke harness can require hook activation, session redirection, and actual returned-frame presentation independently
+
+Verified Render tasks:
+
+```text
+:app:testDebugUnitTest
+:rootlab:testDebugUnitTest
+:app:assembleDebug
+:app:assembleDebug -Pomnilive.rootLab=true
+BUILD SUCCESSFUL
+```
+
+Normal APK:
+
+```text
+https://omnilive-apk-builder.onrender.com/omnilive-debug.apk
+SHA-256 c552d8a200e87c6cba4b6a3adf25029e3f7a6e989273e33afffcabe7b9f91b02
+```
+
+Rooted-lab APK:
+
+```text
+https://omnilive-apk-builder.onrender.com/omnilive-rootlab-debug.apk
+SHA-256 084938924ae3b759cf4da131cad5f84a4b5e8f489037946e5a37c3c686f678c8
+```
+
+For the rooted Zoom proof run, use the rootlab APK and enable the module for `us.zoom.videomeetings`. The strongest smoke gate is:
+
+```text
+OMNILIVE_ROOTLAB_MODE=1
+OMNILIVE_ROOTLAB_LAUNCH_TARGET=1
+OMNILIVE_ROOTLAB_REQUIRE_HOOKS=1
+OMNILIVE_ROOTLAB_REQUIRE_REDIRECT=1
+OMNILIVE_ROOTLAB_REQUIRE_FRAME_PRESENTED=1
+```
+
+The source implementation is complete enough for this device gate, but the build result alone does not prove that Zoom displays the returned OmniLive frames on a particular rooted/OEM device. That remains the next external validation step.

@@ -40,6 +40,7 @@ android {
 }
 
 dependencies {
+    testImplementation("junit:junit:4.13.2")
     if(rootLabEnabled) {
         implementation(project(":rootlab"))
     }

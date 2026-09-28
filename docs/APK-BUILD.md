@@ -4,8 +4,10 @@ This Dockerfile is an isolated build utility for producing an installable OmniLi
 
 It does not run the OmniLive backend and does not participate in the live WebRTC/Modal architecture.
 
+The Android toolchain is pinned to AGP 8.10.1 + Gradle 8.11.1 + JDK 17 so Kotlin 2.2.21 is compiled with the R8/D8 generation required for Kotlin 2.2 metadata.
+
 Build stages:
-1. Gradle 8.9 + JDK 17
+1. Gradle 8.11.1 + JDK 17
 2. Android command-line tools
 3. Android API 35 / build-tools 35.0.0
 4. app + rootlab unit tests

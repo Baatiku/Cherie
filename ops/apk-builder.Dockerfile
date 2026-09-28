@@ -1,4 +1,4 @@
-FROM gradle:8.9-jdk17 AS build
+FROM gradle:8.11.1-jdk17 AS build
 
 USER root
 

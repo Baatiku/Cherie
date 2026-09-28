@@ -7,7 +7,7 @@ TOOLS_DIR="${CACHE_DIR}/tools"
 ANDROID_HOME="${CACHE_DIR}/android-sdk"
 ANDROID_SDK_ROOT="${ANDROID_HOME}"
 JDK_HOME="${TOOLS_DIR}/jdk17"
-GRADLE_HOME="${TOOLS_DIR}/gradle-8.9"
+GRADLE_HOME="${TOOLS_DIR}/gradle-8.11.1"
 ARTIFACT_DIR="${ROOT_DIR}/build-artifacts"
 
 ANDROID_COMMANDLINE_TOOLS="15859902"
@@ -24,12 +24,12 @@ if [[ ! -x "${JDK_HOME}/bin/java" ]]; then
 fi
 
 if [[ ! -x "${GRADLE_HOME}/bin/gradle" ]]; then
-  echo "==> Downloading Gradle 8.9"
-  curl -fsSL --retry 3 --retry-delay 2     "https://services.gradle.org/distributions/gradle-8.9-bin.zip"     -o "${CACHE_DIR}/gradle-8.9-bin.zip"
-  curl -fsSL --retry 3 --retry-delay 2     "https://services.gradle.org/distributions/gradle-8.9-bin.zip.sha256"     -o "${CACHE_DIR}/gradle-8.9-bin.zip.sha256"
-  printf '%s  %s\n' "$(cat "${CACHE_DIR}/gradle-8.9-bin.zip.sha256")" "${CACHE_DIR}/gradle-8.9-bin.zip" | sha256sum -c -
+  echo "==> Downloading Gradle 8.11.1"
+  curl -fsSL --retry 3 --retry-delay 2     "https://services.gradle.org/distributions/gradle-8.11.1-bin.zip"     -o "${CACHE_DIR}/gradle-8.11.1-bin.zip"
+  curl -fsSL --retry 3 --retry-delay 2     "https://services.gradle.org/distributions/gradle-8.11.1-bin.zip.sha256"     -o "${CACHE_DIR}/gradle-8.11.1-bin.zip.sha256"
+  printf '%s  %s\n' "$(cat "${CACHE_DIR}/gradle-8.11.1-bin.zip.sha256")" "${CACHE_DIR}/gradle-8.11.1-bin.zip" | sha256sum -c -
   rm -rf "${GRADLE_HOME}"
-  unzip -q "${CACHE_DIR}/gradle-8.9-bin.zip" -d "${TOOLS_DIR}"
+  unzip -q "${CACHE_DIR}/gradle-8.11.1-bin.zip" -d "${TOOLS_DIR}"
 fi
 
 if [[ ! -x "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" ]]; then

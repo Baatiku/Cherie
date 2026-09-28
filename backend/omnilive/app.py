@@ -382,6 +382,14 @@ def prometheus_payload() -> str:
         _metric_line("omnilive_crop_max_side", payload["crop_max_side"]),
         "# TYPE omnilive_model_loaded gauge",
         _metric_line("omnilive_model_loaded", 1 if payload.get("loaded") else 0),
+        "# TYPE omnilive_model_execution_failures_total counter",
+        _metric_line("omnilive_model_execution_failures_total", payload.get("execution_failure_count", 0)),
+        "# TYPE omnilive_model_recoveries_total counter",
+        _metric_line("omnilive_model_recoveries_total", payload.get("recovery_count", 0)),
+        "# TYPE omnilive_model_recovery_cooldown_ms gauge",
+        _metric_line("omnilive_model_recovery_cooldown_ms", payload.get("recovery_cooldown_remaining_ms", 0)),
+        "# TYPE omnilive_model_quarantined_providers gauge",
+        _metric_line("omnilive_model_quarantined_providers", len(payload.get("quarantined_providers") or [])),
     ]
     if memory.get("process_rss_mb") is not None:
         lines.extend([

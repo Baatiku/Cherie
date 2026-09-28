@@ -74,6 +74,10 @@ class SessionRegistry:
             state=self._items.get(session_id)
             return None if state is None else state.reference_image
 
+    def discard(self,session_id:str)->bool:
+        with self._lock:
+            return self._items.pop(session_id,None) is not None
+
     def update_profile(self,session_id:str,profile:QualityProfile)->bool:
         with self._lock:
             state=self._items.get(session_id)

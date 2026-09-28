@@ -43,3 +43,6 @@ def test_session_stores_reference_image_in_worker_local_state():
     assert registry.set_reference_image(created.session_id, reference) is True
     stored = registry.get_reference_image(created.session_id)
     assert stored == reference
+    assert registry.discard(created.session_id) is True
+    assert registry.get_reference_image(created.session_id) is None
+    assert registry.discard(created.session_id) is False

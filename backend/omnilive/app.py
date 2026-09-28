@@ -562,6 +562,7 @@ async def live_socket(websocket: WebSocket):
             await asyncio.gather(*tasks, return_exceptions=True)
         if session is not None:
             await close_peer(session.session_id)
+            registry.discard(session.session_id)
 
 
 @app.post("/v1/benchmark")

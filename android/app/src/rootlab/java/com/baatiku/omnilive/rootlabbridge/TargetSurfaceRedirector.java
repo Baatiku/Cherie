@@ -31,6 +31,8 @@ final class TargetSurfaceRedirector {
     private static final int FALLBACK_HEIGHT = 720;
     private static final IdentityHashMap<Surface, Replacement> REPLACEMENTS =
         new IdentityHashMap<>();
+    private static final IdentityHashMap<OutputConfiguration, OutputConfiguration> CONFIG_REPLACEMENTS =
+        new IdentityHashMap<>();
     private static final Set<Surface> UNSAFE_TARGETS =
         Collections.newSetFromMap(new IdentityHashMap<>());
 
@@ -96,6 +98,52 @@ final class TargetSurfaceRedirector {
         return null;
     }
 
+    static synchronized Object[] substituteSessionMethodArgs(Object[] args) {
+        if (args == null || args.length == 0) return null;
+        Object[] next = null;
+
+        for (int index = 0; index < args.length; index++) {
+            Object value = args[index];
+            Object replacement = null;
+
+            if (value instanceof Surface) {
+                Replacement mapped = REPLACEMENTS.get((Surface) value);
+                replacement = mapped == null ? null : mapped.surface;
+            } else if (value instanceof OutputConfiguration) {
+                replacement = CONFIG_REPLACEMENTS.get((OutputConfiguration) value);
+            } else if (value instanceof List<?>) {
+                List<?> list = (List<?>) value;
+                if (!list.isEmpty() && allInstancesOf(list, Surface.class)) {
+                    ArrayList<Surface> mappedList = new ArrayList<>(list.size());
+                    boolean changed = false;
+                    for (Object item : list) {
+                        Surface original = (Surface) item;
+                        Replacement mapped = REPLACEMENTS.get(original);
+                        mappedList.add(mapped == null ? original : mapped.surface);
+                        changed |= mapped != null;
+                    }
+                    if (changed) replacement = mappedList;
+                } else if (!list.isEmpty() && allInstancesOf(list, OutputConfiguration.class)) {
+                    ArrayList<OutputConfiguration> mappedList = new ArrayList<>(list.size());
+                    boolean changed = false;
+                    for (Object item : list) {
+                        OutputConfiguration original = (OutputConfiguration) item;
+                        OutputConfiguration mapped = CONFIG_REPLACEMENTS.get(original);
+                        mappedList.add(mapped == null ? original : mapped);
+                        changed |= mapped != null;
+                    }
+                    if (changed) replacement = mappedList;
+                }
+            }
+
+            if (replacement != null && replacement != value) {
+                if (next == null) next = args.clone();
+                next[index] = replacement;
+            }
+        }
+        return next;
+    }
+
     static synchronized Surface substituteTarget(Surface original, boolean create) {
         if (original == null) return null;
         Replacement replacement = REPLACEMENTS.get(original);
@@ -127,6 +175,7 @@ final class TargetSurfaceRedirector {
             replacement.close();
         }
         REPLACEMENTS.clear();
+        CONFIG_REPLACEMENTS.clear();
         UNSAFE_TARGETS.clear();
         Log.i(TAG, "target surface redirector reset");
     }
@@ -234,6 +283,7 @@ final class TargetSurfaceRedirector {
                 copyOptionalProperty(original, copy, "getTimestampBase", "setTimestampBase");
                 copyOptionalProperty(original, copy, "getMirrorMode", "setMirrorMode");
                 copyOptionalProperty(original, copy, "isReadoutTimestampEnabled", "setReadoutTimestampEnabled");
+                CONFIG_REPLACEMENTS.put(original, copy);
                 redirected.add(copy);
             }
             return redirected;

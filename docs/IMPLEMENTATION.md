@@ -38,15 +38,18 @@
 - [ ] optional renderer-present timestamp refinement beyond renderer-input timing
 
 ## Phase 3 — GPU visual processor
+- [x] Android gallery reference-image picker, preview, replace/remove controls and private local normalization
 - [x] session-affine Android reference-image upload over the pinned live WebSocket
-- [x] backend reference-image validation, normalization, bounded storage and metadata acknowledgement
+- [x] backend reference-image validation, normalization, bounded worker-local storage and metadata acknowledgement
+- [x] reference-image state disposal when the pinned live session closes
+- [x] opt-in dual-image ONNX adapter for compatible live-crop + reference-image models
 - [x] GPU-resident processor contract
 - [x] processor p50/p95 timing
 - [x] Modal Volume mounted at /models
 - [x] ONNX Runtime GPU dependency in Modal image
 - [x] CPU ONNX runtime for local/CI tests
 - [x] TensorRT/CUDA/CPU provider selection
-- [x] lazy model cache + cold-start preload
+- [x] lazy model cache + L4 startup preload for visual model and available face/landmark runtimes
 - [x] generic NCHW/NHWC image-to-image adapter
 - [x] built-in effects
 - [x] per-session effect selection
@@ -94,8 +97,11 @@ The rooted lab phase remains isolated from transport/model code. The generic out
 
 ## Current external gates
 
-The core software can proceed without model weights, but real performance validation requires:
-1. a Modal `omnilive-runtime` Secret and a deployed endpoint from current main
-2. a reachable TURN service or managed TURN credentials
-3. a real Android test device
-4. a real ONNX model in the `omnilive-models` Volume for custom-model benchmarks
+The core source implementation can continue without external assets, but install/live validation now requires:
+1. an Android build executor: the repo has GitHub artifact workflows plus `ops/apk-builder.Dockerfile`, but the current private-repo GitHub jobs are failing before runner steps execute
+2. a Modal `omnilive-runtime` Secret and a deployed endpoint from current main
+3. a reachable TURN service or managed TURN credentials for relay benchmarking
+4. a real Android test device
+5. a real ONNX model in the `omnilive-models` Volume for custom-model benchmarks
+
+For reference-aware models, `OMNILIVE_MODEL_ADAPTER=dual_image` supports exactly two 4D image inputs. Models requiring embeddings, masks or latent inputs need a dedicated adapter.

@@ -23,6 +23,8 @@ class LiveDiagnosticsTest {
                 frameLatencyP50Ms=85,
                 frameLatencyP95Ms=120,
                 frameLatencySamples=12,
+                thermalStatus="severe",
+                thermalQualityCap="low_latency",
                 referenceImageStatus="ready",
                 referenceImageWidth=768,
                 referenceImageHeight=768,
@@ -34,6 +36,7 @@ class LiveDiagnosticsTest {
         assertTrue(text.contains("RTT/loss: 42ms / 1.25%"))
         assertTrue(text.contains("srflx -> host / udp / direct"))
         assertTrue(text.contains("Frame RT p50/p95: 85/120 ms n=12"))
+        assertTrue(text.contains("Thermal: severe · cap low_latency"))
         assertTrue(text.contains("Reference: ready 768x768"))
         assertTrue(text.contains("Last error: example"))
     }

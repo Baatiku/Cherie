@@ -6,6 +6,9 @@
 - [x] session registry and expiry
 - [x] Modal L4 ASGI service
 - [x] tests and CI definitions
+- [x] explicit Gradle 8.9 CI toolchain
+- [x] Kotlin 2 Compose compiler plugin
+- [x] lightweight CPU test dependencies separated from GPU image
 
 ## Phase 2 — realtime transport
 - [x] Android WebRTC + Camera2 capture
@@ -24,16 +27,15 @@
 - [x] GPU-resident processor contract
 - [x] processor p50/p95 timing
 - [x] Modal Volume mounted at /models
-- [x] ONNX Runtime GPU dependency
+- [x] ONNX Runtime GPU dependency in Modal image
+- [x] CPU ONNX runtime for local/CI tests
 - [x] TensorRT/CUDA/CPU provider selection
-- [x] lazy model cache
-- [x] model preload at Modal container startup
+- [x] lazy model cache + cold-start preload
 - [x] generic NCHW/NHWC image-to-image adapter
 - [x] built-in effects
 - [x] per-session effect selection
 - [x] Android effect controls
-- [x] model diagnostics endpoint
-- [x] synthetic processor benchmark endpoint
+- [x] model diagnostics and synthetic benchmark
 - [ ] detector + landmark tracker
 - [ ] temporal crop tracking
 - [ ] masks/color correction/enhancement

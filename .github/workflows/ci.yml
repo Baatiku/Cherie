@@ -1,8 +1,10 @@
 name: CI
+
 on:
   push:
     branches: [main]
   pull_request:
+
 jobs:
   backend:
     runs-on: ubuntu-latest
@@ -11,8 +13,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.txt
       - run: pip install -r backend/requirements-dev.txt
       - run: PYTHONPATH=backend pytest backend/tests -q
+
   android:
     runs-on: ubuntu-latest
     steps:
@@ -22,5 +27,7 @@ jobs:
           distribution: temurin
           java-version: "17"
       - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
       - working-directory: android
-        run: gradle :app:assembleDebug
+        run: gradle :app:assembleDebug --stacktrace

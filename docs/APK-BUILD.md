@@ -189,3 +189,44 @@ SHA-256 a72c758c19a74a8a85c5be5f02ab2ba550e29c427e524cd9922e85e9a7472a29
 ```
 
 The rootlab APK contains the isolated lab runtime, real `su` capability probe, processed-frame lifecycle bridge, bounded camera rebind/recovery coordinator, physical-camera fallback path, and a Zoom package preset. It does not yet contain the final rooted/device-specific camera redirection adapter that makes another app consume OmniLive frames; that remains the next rootlab implementation phase.
+
+
+## Verified transport-preflight dual build
+
+Application source:
+
+```text
+1b97d2522ed179f2d3c8d7496238d5b92d7d56c0
+```
+
+This build upgrades the Android preflight from a health-only request to a disposable end-to-end transport check. It verifies backend health, ICE/TURN configuration, authenticated session creation/validation, a real WebSocket upgrade and `/v1/live` probe, then deletes the disposable session.
+
+Verified tasks:
+
+```text
+:app:testDebugUnitTest
+:rootlab:testDebugUnitTest
+:app:assembleDebug
+:app:assembleDebug -Pomnilive.rootLab=true
+BUILD SUCCESSFUL
+```
+
+Backend CI on the same source passed:
+
+```text
+51 passed
+```
+
+Normal APK:
+
+```text
+https://omnilive-apk-builder.onrender.com/omnilive-debug.apk
+SHA-256 fb43f7d144730a950ecf720dde09fee182db4b1787d9ddf8b7d4b4007f1ddfa7
+```
+
+Rooted-lab APK:
+
+```text
+https://omnilive-apk-builder.onrender.com/omnilive-rootlab-debug.apk
+SHA-256 f608dd11c74e19a311cffffdb50f2cffb029b5ce46a848741c7e96799ac4933d
+```

@@ -12,6 +12,7 @@ import com.baatiku.omnilive.stream.SharedEglContextRegistry
 import com.baatiku.omnilive.stream.SurfaceFrameOutput
 import org.webrtc.EglBase
 import org.webrtc.VideoFrame
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Rootlab-only broker that receives target-process Camera2 output Surfaces over Messenger and
@@ -160,7 +161,16 @@ class RootLabSurfaceBrokerService:Service() {
         var attached=0
         surfaces.forEachIndexed { index,surface ->
             if(!surface.isValid) return@forEachIndexed
-            val output=SurfaceFrameOutput(context)
+            val firstPresentation=AtomicBoolean(false)
+            val output=SurfaceFrameOutput(context) { swapTimeNs ->
+                if(firstPresentation.compareAndSet(false,true)) {
+                    Log.i(
+                        TAG,
+                        "presented returned frame index="+index+
+                            " swap_ns="+swapTimeNs
+                    )
+                }
+            }
             try {
                 output.attach(surface,mirror=false)
                 outputs.add(output)

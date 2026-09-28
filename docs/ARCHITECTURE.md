@@ -1,12 +1,12 @@
 # Architecture
 
-Physical camera -> Android WebRTC -> Modal GPU -> Android remote VideoTrack -> MediaCodec H.264 -> localhost:7878 -> LSPosed decoder inside Zoom -> Zoom Camera2 Surface.
+Physical camera -> Android WebRTC -> Modal GPU -> Android remote VideoTrack -> MediaCodec H.264 -> an Android abstract local socket -> LSPosed decoder inside Zoom -> Zoom Camera2 Surface.
 
 The microphone is not proxied. Zoom continues to own its normal microphone path.
 
 ## Local bridge
 
-Loading another WebRTC stack inside Zoom risks native-library collisions. The companion process owns cloud WebRTC. The hooked Zoom process only contains a TCP client and Android MediaCodec decoder.
+Loading another WebRTC stack inside Zoom risks native-library collisions. The companion process owns cloud WebRTC. The hooked Zoom process only contains a local-socket client and Android MediaCodec decoder.
 
 Protocol:
 - greeting: ASCII OMNI1, int32 width, int32 height

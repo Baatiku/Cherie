@@ -1,13 +1,13 @@
 package com.baatiku.omnicam;
 
+import android.net.Credentials;
+import android.net.LocalServerSocket;
+import android.net.LocalSocket;
 import android.util.Log;
 
 import java.io.BufferedOutputStream;
 import java.io.Closeable;
 import java.io.DataOutputStream;
-import java.net.InetAddress;
-import java.net.ServerSocket;
-import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -18,21 +18,25 @@ public final class LocalH264Server implements Closeable {
 
     private static final String TAG = "OmniCam";
 
-    private final int port;
-    private final List<DataOutputStream> clients = new CopyOnWriteArrayList<>();
+    private final String socketName;
+    private final int allowedUid;
+    private final List<Client> clients = new CopyOnWriteArrayList<>();
+
     private volatile boolean running;
     private volatile int width;
     private volatile int height;
     private volatile byte[] codecConfig;
-    private ServerSocket server;
+    private LocalServerSocket server;
 
-    public LocalH264Server(int port) {
-        this.port = port;
+    public LocalH264Server(String socketName, int allowedUid) {
+        this.socketName = socketName;
+        this.allowedUid = allowedUid;
     }
 
     public void start() throws Exception {
-        server = new ServerSocket(port, 4, InetAddress.getByName("127.0.0.1"));
+        server = new LocalServerSocket(socketName);
         running = true;
+
         Thread t = new Thread(this::acceptLoop, "omnicam-relay");
         t.setDaemon(true);
         t.start();
@@ -45,69 +49,125 @@ public final class LocalH264Server implements Closeable {
     }
 
     private synchronized void awaitFormat() throws InterruptedException {
-        while (running && (width <= 0 || height <= 0)) wait(250);
+        while (running && (width <= 0 || height <= 0)) {
+            wait(250);
+        }
     }
 
     private void acceptLoop() {
         while (running) {
+            LocalSocket socket = null;
             try {
-                Socket socket = server.accept();
-                socket.setTcpNoDelay(true);
+                socket = server.accept();
+                Credentials peer = socket.getPeerCredentials();
+
+                if (peer == null || peer.getUid() != allowedUid) {
+                    Log.w(
+                            TAG,
+                            "Rejected virtual-camera client uid="
+                                    + (peer == null ? -1 : peer.getUid()));
+                    socket.close();
+                    continue;
+                }
+
                 awaitFormat();
                 if (!running) {
                     socket.close();
                     break;
                 }
 
+                socket.setSendBufferSize(256 * 1024);
                 DataOutputStream out = new DataOutputStream(
-                        new BufferedOutputStream(socket.getOutputStream(), 128 * 1024));
+                        new BufferedOutputStream(
+                                socket.getOutputStream(),
+                                128 * 1024));
+
                 out.write("OMNI1".getBytes(StandardCharsets.US_ASCII));
                 out.writeInt(width);
                 out.writeInt(height);
                 out.flush();
-                clients.add(out);
+
+                Client client = new Client(socket, out);
+                clients.add(client);
 
                 byte[] config = codecConfig;
-                if (config != null) writePacket(out, TYPE_CONFIG, 0, config);
-                Log.i(TAG, "Virtual-camera client connected; clients=" + clients.size());
+                if (config != null) {
+                    writePacket(client, TYPE_CONFIG, 0, config);
+                }
+
+                Log.i(
+                        TAG,
+                        "Authorized Zoom virtual-camera client connected; clients="
+                                + clients.size());
             } catch (Throwable t) {
-                if (running) Log.w(TAG, "Relay accept failed", t);
+                if (socket != null) {
+                    try { socket.close(); } catch (Throwable ignored) {}
+                }
+                if (running) {
+                    Log.w(TAG, "Relay accept failed", t);
+                }
             }
         }
     }
 
     public void publish(byte type, long ptsUs, byte[] payload) {
-        if (type == TYPE_CONFIG) codecConfig = payload.clone();
+        if (type == TYPE_CONFIG) {
+            codecConfig = payload.clone();
+        }
 
-        for (DataOutputStream out : clients) {
+        for (Client client : clients) {
             try {
-                writePacket(out, type, ptsUs, payload);
+                writePacket(client, type, ptsUs, payload);
             } catch (Throwable t) {
-                clients.remove(out);
-                try { out.close(); } catch (Throwable ignored) {}
+                clients.remove(client);
+                client.close();
             }
         }
     }
 
     private static void writePacket(
-            DataOutputStream out, byte type, long ptsUs, byte[] payload) throws Exception {
-        synchronized (out) {
-            out.writeByte(type);
-            out.writeLong(ptsUs);
-            out.writeInt(payload.length);
-            out.write(payload);
-            out.flush();
+            Client client,
+            byte type,
+            long ptsUs,
+            byte[] payload) throws Exception {
+        synchronized (client.out) {
+            client.out.writeByte(type);
+            client.out.writeLong(ptsUs);
+            client.out.writeInt(payload.length);
+            client.out.write(payload);
+            client.out.flush();
         }
     }
 
     @Override
     public void close() {
         running = false;
-        synchronized (this) { notifyAll(); }
-        try { if (server != null) server.close(); } catch (Throwable ignored) {}
-        for (DataOutputStream out : clients) {
-            try { out.close(); } catch (Throwable ignored) {}
+        synchronized (this) {
+            notifyAll();
+        }
+
+        try {
+            if (server != null) server.close();
+        } catch (Throwable ignored) {}
+
+        for (Client client : clients) {
+            client.close();
         }
         clients.clear();
+    }
+
+    private static final class Client {
+        final LocalSocket socket;
+        final DataOutputStream out;
+
+        Client(LocalSocket socket, DataOutputStream out) {
+            this.socket = socket;
+            this.out = out;
+        }
+
+        void close() {
+            try { out.close(); } catch (Throwable ignored) {}
+            try { socket.close(); } catch (Throwable ignored) {}
+        }
     }
 }

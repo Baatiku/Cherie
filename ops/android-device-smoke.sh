@@ -16,6 +16,7 @@ ROOTLAB_TARGET="${OMNILIVE_ROOTLAB_TARGET_PACKAGE:-us.zoom.videomeetings}"
 ROOTLAB_LAUNCH_TARGET="${OMNILIVE_ROOTLAB_LAUNCH_TARGET:-0}"
 ROOTLAB_REQUIRE_HOOKS="${OMNILIVE_ROOTLAB_REQUIRE_HOOKS:-0}"
 ROOTLAB_REQUIRE_REDIRECT="${OMNILIVE_ROOTLAB_REQUIRE_REDIRECT:-0}"
+ROOTLAB_REQUIRE_FRAME_PRESENTED="${OMNILIVE_ROOTLAB_REQUIRE_FRAME_PRESENTED:-0}"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 REPORT="${OUT_DIR}/device-smoke-${STAMP}.txt"
 
@@ -57,6 +58,7 @@ fi
   echo "rootlab_mode=${ROOTLAB_MODE}"
   echo "rootlab_target=${ROOTLAB_TARGET}"
   echo "rootlab_require_redirect=${ROOTLAB_REQUIRE_REDIRECT}"
+  echo "rootlab_require_frame_presented=${ROOTLAB_REQUIRE_FRAME_PRESENTED}"
   echo
   "${ADB[@]}" shell getprop ro.product.manufacturer | tr -d '\r' | sed 's/^/manufacturer=/'
   "${ADB[@]}" shell getprop ro.product.model | tr -d '\r' | sed 's/^/model=/'
@@ -152,6 +154,16 @@ if [[ "${ROOTLAB_MODE}" == "1" ]]; then
     echo "rootlab_surface_attach=observed" >> "${REPORT}"
   else
     echo "rootlab_surface_attach=not_observed" >> "${REPORT}"
+  fi
+
+  if printf '%s\n' "${LOGS}" | grep -Eq 'presented returned frame index=[0-9]+'; then
+    echo "rootlab_frame_presented=observed" >> "${REPORT}"
+  else
+    echo "rootlab_frame_presented=not_observed" >> "${REPORT}"
+    if [[ "${ROOTLAB_REQUIRE_FRAME_PRESENTED}" == "1" ]]; then
+      echo "FAIL: rootlab frame presentation was required but no returned frame reached a Zoom target surface" | tee -a "${REPORT}"
+      exit 1
+    fi
   fi
 
   if printf '%s\n' "${LOGS}" | grep -Eq 'broker state ready=true'; then

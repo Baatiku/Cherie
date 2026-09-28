@@ -30,12 +30,8 @@ import kotlinx.coroutines.withContext
 import java.util.Locale
 
 class MainActivity:ComponentActivity() {
-    private val cameraPermission=registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
-
     override fun onCreate(savedInstanceState:Bundle?) {
         super.onCreate(savedInstanceState)
-        if(ContextCompat.checkSelfPermission(this,Manifest.permission.CAMERA)!=PackageManager.PERMISSION_GRANTED)
-            cameraPermission.launch(Manifest.permission.CAMERA)
 
         setContent {
             MaterialTheme {
@@ -57,6 +53,20 @@ class MainActivity:ComponentActivity() {
                     mutableStateOf(ReferenceImageStore.preview(referencePath)?.asImageBitmap())
                 }
                 var referencePickerStatus by remember { mutableStateOf<String?>(null) }
+                var cameraGranted by remember {
+                    mutableStateOf(
+                        ContextCompat.checkSelfPermission(this@MainActivity,Manifest.permission.CAMERA)
+                            == PackageManager.PERMISSION_GRANTED
+                    )
+                }
+                val cameraPermissionLauncher=rememberLauncherForActivityResult(
+                    ActivityResultContracts.RequestPermission()
+                ) { granted ->
+                    cameraGranted=granted
+                }
+                LaunchedEffect(Unit) {
+                    if(!cameraGranted) cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                }
 
                 val referencePicker=rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
                     if(uri!=null) {
@@ -73,6 +83,14 @@ class MainActivity:ComponentActivity() {
                                 }
                                 referencePickerStatus=
                                     imported.width.toString()+"×"+imported.height+" · "+(imported.bytes/1024L)+" KB"
+                                LiveTelemetry.update {
+                                    it.copy(
+                                        referenceImageStatus="selected",
+                                        referenceImageWidth=imported.width,
+                                        referenceImageHeight=imported.height,
+                                        referenceImageError=null
+                                    )
+                                }
                             } catch(t:Throwable) {
                                 referencePickerStatus=t.message ?: "Unable to import reference image"
                             }
@@ -127,6 +145,14 @@ class MainActivity:ComponentActivity() {
                                         referencePreview=null
                                         referencePickerStatus=null
                                         prefs.edit().remove("reference_image_path").apply()
+                                        LiveTelemetry.update {
+                                            it.copy(
+                                                referenceImageStatus="none",
+                                                referenceImageWidth=null,
+                                                referenceImageHeight=null,
+                                                referenceImageError=null
+                                            )
+                                        }
                                     },
                                     enabled=!running
                                 ) { Text("Remove") }
@@ -178,17 +204,43 @@ class MainActivity:ComponentActivity() {
                             }
                         }
 
-                        Button(onClick={
-                            if(!running) {
-                                val intent=Intent(this@MainActivity,LiveStreamService::class.java)
-                                    .putExtra("profile",profile)
-                                    .putExtra("effect",effect)
-                                    .putExtra("backend_url",backendUrl)
-                                referencePath?.let { intent.putExtra("reference_image_path",it) }
-                                ContextCompat.startForegroundService(this@MainActivity,intent)
-                            } else stopService(Intent(this@MainActivity,LiveStreamService::class.java))
-                            running=!running
-                        }) { Text(if(running) "Stop live session" else "Start live session") }
+                        if(!cameraGranted) {
+                            Text(
+                                "Camera permission is required before a live session can start.",
+                                color=MaterialTheme.colorScheme.error
+                            )
+                            OutlinedButton(
+                                onClick={ cameraPermissionLauncher.launch(Manifest.permission.CAMERA) }
+                            ) { Text("Grant camera permission") }
+                        }
+
+                        Button(
+                            onClick={
+                                if(!running) {
+                                    val permissionNow=
+                                        ContextCompat.checkSelfPermission(
+                                            this@MainActivity,
+                                            Manifest.permission.CAMERA
+                                        )==PackageManager.PERMISSION_GRANTED
+                                    if(!permissionNow) {
+                                        cameraGranted=false
+                                        cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                                    } else {
+                                        val intent=Intent(this@MainActivity,LiveStreamService::class.java)
+                                            .putExtra("profile",profile)
+                                            .putExtra("effect",effect)
+                                            .putExtra("backend_url",backendUrl)
+                                        referencePath?.let { intent.putExtra("reference_image_path",it) }
+                                        ContextCompat.startForegroundService(this@MainActivity,intent)
+                                        running=true
+                                    }
+                                } else {
+                                    stopService(Intent(this@MainActivity,LiveStreamService::class.java))
+                                    running=false
+                                }
+                            },
+                            enabled=running || cameraGranted
+                        ) { Text(if(running) "Stop live session" else "Start live session") }
 
                         Text(
                             "Connection: "+telemetry.connectionState+" · ICE: "+telemetry.iceState+

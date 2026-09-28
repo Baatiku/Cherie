@@ -18,6 +18,7 @@ from .telemetry import (
     detector_window,
     dropped_inference_counter,
     inference_error_counter,
+    landmark_window,
     model_window,
     overload_event_counter,
     pipeline_health,
@@ -26,6 +27,13 @@ from .telemetry import (
     tracking_reset_counter,
 )
 from .temporal import AdaptiveInferenceBudget, profile_defaults
+from .vision import (
+    SemanticLandmarks,
+    align_face,
+    build_landmark_provider,
+    build_region_detector,
+    vision_status as vision_provider_status,
+)
 
 
 class VisualProcessor:
@@ -65,6 +73,7 @@ class StreamContext:
     last_detection_frame: int = -10_000
     cached_transform: np.ndarray | None = None
     cached_at: float = 0.0
+    semantic_landmarks: SemanticLandmarks | None = None
     last_seen: float = field(default_factory=time.perf_counter)
 
     def configure(self, profile_name: str) -> None:
@@ -78,12 +87,89 @@ class StreamContext:
 
 
 class LocalizedTemporalProcessor:
-    def __init__(self, detector: RegionDetector | None = None, visual: VisualProcessor | None = None):
-        self.detector = detector or OpenCvHaarFaceDetector(max_regions=1)
+    def __init__(
+        self,
+        detector: RegionDetector | None = None,
+        visual: VisualProcessor | None = None,
+        landmark_provider=None,
+    ):
+        self.detector = detector or build_region_detector(max_regions=1)
+        self.landmark_provider = landmark_provider if landmark_provider is not None else build_landmark_provider()
         self.visual = visual or VisualProcessor()
         self._contexts: dict[str, StreamContext] = {}
         self._contexts_lock = Lock()
-        pipeline_health.update(detector_backend=self.detector.name, tracker_backend=LandmarkRegionTracker.name)
+        pipeline_health.update(
+            detector_backend=self.detector.name,
+            tracker_backend=LandmarkRegionTracker.name,
+            landmark_backend=getattr(self.landmark_provider, "name", "none"),
+            face_alignment_enabled=settings.face_alignment_enabled,
+        )
+
+    def vision_status(self) -> dict:
+        return vision_provider_status(self.detector, self.landmark_provider)
+
+    def _refresh_landmarks(self, context: StreamContext, rgb: np.ndarray, region: Region) -> None:
+        if self.landmark_provider is None:
+            context.semantic_landmarks = None
+            pipeline_health.update(landmark_points=0)
+            return
+        started = time.perf_counter()
+        try:
+            context.semantic_landmarks = self.landmark_provider.detect(rgb, region)
+        except Exception:
+            context.semantic_landmarks = None
+        finally:
+            landmark_window.add((time.perf_counter() - started) * 1000.0)
+        pipeline_health.update(
+            landmark_points=0 if context.semantic_landmarks is None else context.semantic_landmarks.count
+        )
+
+    def _move_landmarks_with_tracker(self, context: StreamContext) -> None:
+        landmarks = context.semantic_landmarks
+        transform = context.tracker.last_transform
+        if landmarks is None or transform is None:
+            return
+        moved = cv2.transform(
+            landmarks.points[:, :2].astype(np.float32).reshape(-1, 1, 2),
+            transform,
+        ).reshape(-1, 2)
+        context.semantic_landmarks = SemanticLandmarks(
+            points=moved,
+            score=landmarks.score,
+            schema=landmarks.schema,
+        )
+
+    def _restore_aligned_region(
+        self,
+        crop: np.ndarray,
+        transformed_aligned: np.ndarray,
+        transform: np.ndarray,
+        region: Region,
+    ) -> np.ndarray:
+        inverse = cv2.invertAffineTransform(transform)
+        local = inverse.copy()
+        local[0, 2] -= float(region.x)
+        local[1, 2] -= float(region.y)
+        restored = cv2.warpAffine(
+            transformed_aligned,
+            local,
+            (region.width, region.height),
+            flags=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_CONSTANT,
+        )
+        alpha = cv2.warpAffine(
+            np.ones(transformed_aligned.shape[:2], dtype=np.float32),
+            local,
+            (region.width, region.height),
+            flags=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_CONSTANT,
+        )
+        alpha = np.clip(alpha, 0.0, 1.0)[..., None]
+        return np.clip(
+            crop.astype(np.float32) * (1.0 - alpha) + restored.astype(np.float32) * alpha,
+            0,
+            255,
+        ).astype(np.uint8)
 
     def _effective_profile(self, requested: QualityProfile, frame_width: int) -> str:
         if frame_width <= 700:
@@ -242,6 +328,9 @@ class LocalizedTemporalProcessor:
             if tracked is None:
                 tracking_reset_counter.increment()
                 context.clear_cache()
+                context.semantic_landmarks = None
+            else:
+                self._move_landmarks_with_tracker(context)
 
         frames_since_detection = context.frame_index - context.last_detection_frame
         detector_due = (
@@ -261,11 +350,15 @@ class LocalizedTemporalProcessor:
             if detected is not None:
                 try:
                     tracked = context.tracker.seed(rgb, detected)
+                    self._refresh_landmarks(context, rgb, tracked)
                 except ValueError:
                     tracked = None
+                    context.semantic_landmarks = None
             elif tracked is None or context.tracker.confidence < settings.tracker_min_confidence:
                 context.tracker.reset()
                 context.clear_cache()
+                context.semantic_landmarks = None
+                pipeline_health.update(landmark_points=0)
                 tracked = None
 
         region = tracked or context.tracker.region
@@ -277,6 +370,8 @@ class LocalizedTemporalProcessor:
                 detector_interval=budget.detector_interval,
                 crop_max_side=budget.crop_max_side,
                 tracking_confidence=0.0,
+                landmark_points=0,
+                face_alignment_enabled=settings.face_alignment_enabled,
             )
             return rgb
         region = region.padded(settings.region_padding, w, h)
@@ -298,13 +393,23 @@ class LocalizedTemporalProcessor:
                 detector_interval=budget.detector_interval,
                 crop_max_side=budget.crop_max_side,
                 tracking_confidence=round(context.tracker.confidence, 3),
+                landmark_points=0 if context.semantic_landmarks is None else context.semantic_landmarks.count,
+                face_alignment_enabled=settings.face_alignment_enabled,
             )
             return self._composite(rgb, region, cached)
 
         x0, y0 = region.x, region.y
         x1, y1 = x0 + region.width, y0 + region.height
         crop = rgb[y0:y1, x0:x1]
-        model_input, original_size = self._resize_for_budget(crop, budget.crop_max_side)
+        aligned = None
+        if (
+            settings.face_alignment_enabled
+            and effect == EffectProfile.CUSTOM_ONNX
+            and context.semantic_landmarks is not None
+        ):
+            aligned = align_face(rgb, context.semantic_landmarks, settings.face_alignment_size)
+        source_for_model = aligned.image if aligned is not None else crop
+        model_input, original_size = self._resize_for_budget(source_for_model, budget.crop_max_side)
         model_started = time.perf_counter()
         overload_before = budget.overload_events
         try:
@@ -316,6 +421,8 @@ class LocalizedTemporalProcessor:
                 overload_event_counter.increment(budget.overload_events - overload_before)
             if transformed.shape[:2] != (original_size[1], original_size[0]):
                 transformed = cv2.resize(transformed, original_size, interpolation=cv2.INTER_LINEAR)
+            if aligned is not None:
+                transformed = self._restore_aligned_region(crop, transformed, aligned.transform, region)
             if effect == EffectProfile.CUSTOM_ONNX:
                 transformed = self._match_color(crop, transformed)
             context.cached_transform = transformed
@@ -335,6 +442,8 @@ class LocalizedTemporalProcessor:
             detector_interval=budget.detector_interval,
             crop_max_side=budget.crop_max_side,
             tracking_confidence=round(context.tracker.confidence, 3),
+            landmark_points=0 if context.semantic_landmarks is None else context.semantic_landmarks.count,
+            face_alignment_enabled=settings.face_alignment_enabled,
         )
         return self._composite(rgb, region, transformed)
 
@@ -378,6 +487,9 @@ class TimedProcessor:
 
     def release_stream(self, stream_key: str) -> None:
         self.localized.release_stream(stream_key)
+
+    def vision_status(self) -> dict:
+        return self.localized.vision_status()
 
 
 def _video_frame(rgb: np.ndarray, source: VideoFrame) -> VideoFrame:

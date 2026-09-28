@@ -37,6 +37,7 @@ from .telemetry import (
     inference_error_counter,
     input_age_window,
     input_overwrite_counter,
+    landmark_window,
     media_wait_window,
     model_window,
     overload_event_counter,
@@ -88,6 +89,7 @@ def telemetry_payload():
     detect = detector_window.snapshot()
     track = tracker_window.snapshot()
     model = model_window.snapshot()
+    landmark = landmark_window.snapshot()
     composite = compositor_window.snapshot()
     input_age = input_age_window.snapshot()
     return {
@@ -103,6 +105,8 @@ def telemetry_payload():
         "detector_p95_ms": detect.p95_ms,
         "tracker_p50_ms": track.p50_ms,
         "tracker_p95_ms": track.p95_ms,
+        "landmark_p50_ms": landmark.p50_ms,
+        "landmark_p95_ms": landmark.p95_ms,
         "model_p50_ms": model.p50_ms,
         "model_p95_ms": model.p95_ms,
         "compositor_p50_ms": composite.p50_ms,
@@ -122,11 +126,13 @@ def telemetry_payload():
             "input_age": _window_payload(input_age_window),
             "detect": _window_payload(detector_window),
             "track": _window_payload(tracker_window),
+            "landmark": _window_payload(landmark_window),
             "model": _window_payload(model_window),
             "composite": _window_payload(compositor_window),
             "total": _window_payload(processor_window),
         },
         **pipeline_health.snapshot(),
+        **processor.vision_status(),
         **runtime.status(),
     }
 

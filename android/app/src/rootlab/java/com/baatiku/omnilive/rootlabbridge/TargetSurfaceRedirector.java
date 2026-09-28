@@ -11,8 +11,10 @@ import android.view.Surface;
 
 import java.lang.reflect.Method;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Target-process Camera2 redirection state.
@@ -27,6 +29,8 @@ final class TargetSurfaceRedirector {
     private static final int FALLBACK_HEIGHT = 720;
     private static final IdentityHashMap<Surface, Replacement> REPLACEMENTS =
         new IdentityHashMap<>();
+    private static final Set<Surface> UNSAFE_TARGETS =
+        Collections.newSetFromMap(new IdentityHashMap<>());
 
     private static HandlerThread drainThread;
     private static Handler drainHandler;
@@ -54,8 +58,21 @@ final class TargetSurfaceRedirector {
             }
             if (!allSurfaces || originals.isEmpty()) continue;
 
-            ArrayList<Surface> dummies = prepare(originals);
-            if (dummies.size() != originals.size()) {
+            for (Surface original : originals) {
+                if (UNSAFE_TARGETS.contains(original)) {
+                    Log.w(TAG, "session redirect bypassed: request target was built before broker readiness");
+                    return null;
+                }
+            }
+
+            ArrayList<Surface> dummies = new ArrayList<>(originals.size());
+            try {
+                for (Surface original : originals) {
+                    Replacement replacement = ensureReplacement(original);
+                    dummies.add(replacement.surface);
+                }
+            } catch (Throwable t) {
+                Log.w(TAG, "session redirect preparation failed", t);
                 reset();
                 return null;
             }
@@ -67,10 +84,22 @@ final class TargetSurfaceRedirector {
         return null;
     }
 
-    static synchronized Surface substituteTarget(Surface original) {
+    static synchronized Surface substituteTarget(Surface original, boolean create) {
         if (original == null) return null;
         Replacement replacement = REPLACEMENTS.get(original);
+        if (replacement == null && create) {
+            try {
+                replacement = ensureReplacement(original);
+            } catch (Throwable t) {
+                Log.w(TAG, "request target redirect preparation failed", t);
+                return original;
+            }
+        }
         return replacement == null ? original : replacement.surface;
+    }
+
+    static synchronized void markUnsafeTarget(Surface original) {
+        if (original != null) UNSAFE_TARGETS.add(original);
     }
 
     static synchronized boolean isRedirected(Surface original) {
@@ -86,42 +115,34 @@ final class TargetSurfaceRedirector {
             replacement.close();
         }
         REPLACEMENTS.clear();
+        UNSAFE_TARGETS.clear();
         Log.i(TAG, "target surface redirector reset");
     }
 
-    private static ArrayList<Surface> prepare(List<Surface> originals) {
-        reset();
-        ensureDrainThread();
+    private static Replacement ensureReplacement(Surface original) {
+        Replacement existing = REPLACEMENTS.get(original);
+        if (existing != null) return existing;
 
-        ArrayList<Surface> dummies = new ArrayList<>(originals.size());
-        try {
-            for (Surface original : originals) {
-                Size size = surfaceSize(original);
-                ImageReader reader = ImageReader.newInstance(
-                    Math.max(1, size.getWidth()),
-                    Math.max(1, size.getHeight()),
-                    ImageFormat.PRIVATE,
-                    3
-                );
-                reader.setOnImageAvailableListener(
-                    source -> drainLatest(source),
-                    drainHandler
-                );
-                Replacement replacement = new Replacement(reader);
-                REPLACEMENTS.put(original, replacement);
-                dummies.add(replacement.surface);
-                Log.i(
-                    TAG,
-                    "mapped Zoom surface " + size.getWidth() + "x" + size.getHeight()
-                        + " -> dummy PRIVATE ImageReader"
-                );
-            }
-            return dummies;
-        } catch (Throwable t) {
-            Log.w(TAG, "failed to prepare dummy Camera2 surfaces", t);
-            reset();
-            return new ArrayList<>();
-        }
+        ensureDrainThread();
+        Size size = surfaceSize(original);
+        ImageReader reader = ImageReader.newInstance(
+            Math.max(1, size.getWidth()),
+            Math.max(1, size.getHeight()),
+            ImageFormat.PRIVATE,
+            3
+        );
+        reader.setOnImageAvailableListener(
+            source -> drainLatest(source),
+            drainHandler
+        );
+        Replacement replacement = new Replacement(reader);
+        REPLACEMENTS.put(original, replacement);
+        Log.i(
+            TAG,
+            "mapped Zoom surface " + size.getWidth() + "x" + size.getHeight()
+                + " -> dummy PRIVATE ImageReader"
+        );
+        return replacement;
     }
 
     private static void ensureDrainThread() {

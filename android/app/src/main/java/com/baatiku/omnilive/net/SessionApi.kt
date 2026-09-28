@@ -15,6 +15,15 @@ data class BackendTelemetry(
     val inputOverwrittenFrames:Long
 )
 
+data class BackendHealth(
+    val ok:Boolean,
+    val status:String,
+    val service:String,
+    val modelConfigured:Boolean,
+    val modelLoaded:Boolean,
+    val providers:List<String>
+)
+
 object SessionApi {
     private fun connection(url:String,method:String):HttpURLConnection {
         return (URL(url).openConnection() as HttpURLConnection).apply {
@@ -56,6 +65,34 @@ object SessionApi {
             droppedInferenceFrames=json.optLong("dropped_inference_frames",0L),
             inputOverwrittenFrames=json.optLong("input_overwritten_frames",0L)
         )
+    }
+
+    fun parseHealth(json:JSONObject):BackendHealth {
+        val providersArray=json.optJSONArray("providers")
+        val providers=if(providersArray==null) emptyList() else
+            (0 until providersArray.length()).map { providersArray.optString(it) }
+                .filter { it.isNotBlank() }
+        return BackendHealth(
+            ok=json.optBoolean("ok",false),
+            status=json.optString("status","unknown"),
+            service=json.optString("service","unknown"),
+            modelConfigured=json.optBoolean("configured",false),
+            modelLoaded=json.optBoolean("loaded",false),
+            providers=providers
+        )
+    }
+
+    fun health(baseUrl:String):BackendHealth {
+        require(baseUrl.isNotBlank()) { "Backend URL is empty" }
+        val conn=connection(baseUrl.trimEnd('/')+"/health","GET")
+        try {
+            val code=conn.responseCode
+            check(code in 200..299) { "Health check failed: $code" }
+            val json=JSONObject(conn.inputStream.bufferedReader().use { it.readText() })
+            return parseHealth(json)
+        } finally {
+            conn.disconnect()
+        }
     }
 
     fun telemetry(baseUrl:String):BackendTelemetry {

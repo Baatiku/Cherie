@@ -52,3 +52,23 @@ def test_five_point_alignment_produces_requested_square():
     assert aligned is not None
     assert aligned.image.shape == (96, 96, 3)
     assert aligned.transform.shape == (2, 3)
+
+
+def test_scrfd_output_grouping_ignores_landmark_outputs():
+    from omnilive.vision import ScrfdFaceDetector
+
+    scores = [np.zeros((8, 1), dtype=np.float32) for _ in range(3)]
+    boxes = [np.zeros((8, 4), dtype=np.float32) for _ in range(3)]
+    landmarks = [np.zeros((8, 10), dtype=np.float32) for _ in range(3)]
+    pairs = ScrfdFaceDetector._output_pairs(scores + boxes + landmarks)
+    assert len(pairs) == 3
+    assert all(pair[0].shape[-1] == 1 for pair in pairs)
+    assert all(pair[1].shape[-1] == 4 for pair in pairs)
+
+
+def test_flat_68x3_landmarks_are_not_misread_as_102x2():
+    from omnilive.vision import OnnxFaceLandmarkProvider
+
+    points = OnnxFaceLandmarkProvider._points(np.zeros(68 * 3, dtype=np.float32))
+    assert points is not None
+    assert points.shape == (68, 3)

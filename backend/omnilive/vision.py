@@ -226,7 +226,13 @@ class ScrfdFaceDetector:
 
     @staticmethod
     def _output_pairs(outputs: list[np.ndarray]) -> list[tuple[np.ndarray, np.ndarray]]:
-        if len(outputs) >= 6:
+        if len(outputs) >= 9 and len(outputs) % 3 == 0:
+            levels = min(5, len(outputs) // 3)
+            score_outputs = outputs[:levels]
+            bbox_outputs = outputs[levels : levels * 2]
+            if all(np.asarray(value).size >= 4 for value in bbox_outputs):
+                return list(zip(score_outputs, bbox_outputs))
+        if len(outputs) >= 6 and len(outputs) % 2 == 0:
             levels = min(5, len(outputs) // 2)
             score_outputs = outputs[:levels]
             bbox_outputs = outputs[levels : levels * 2]
@@ -347,9 +353,15 @@ class OnnxFaceLandmarkProvider:
         if array.ndim >= 2 and array.shape[-1] in (2, 3):
             return array.reshape(-1, array.shape[-1])
         flat = array.reshape(-1)
+        known_counts = (5, 68, 106)
         for dimensions in (2, 3):
-            if len(flat) >= dimensions * 5 and len(flat) % dimensions == 0:
-                return flat.reshape(-1, dimensions)
+            if len(flat) % dimensions != 0:
+                continue
+            count = len(flat) // dimensions
+            if count in known_counts:
+                return flat.reshape(count, dimensions)
+        if len(flat) >= 10 and len(flat) % 2 == 0:
+            return flat.reshape(-1, 2)
         return None
 
 

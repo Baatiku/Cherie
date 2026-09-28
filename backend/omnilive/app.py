@@ -1,10 +1,11 @@
+import asyncio
 import time
 import uuid
 
 import numpy as np
 from av import VideoFrame
-from fastapi import FastAPI, Header, HTTPException
-from pydantic import BaseModel, Field
+from fastapi import FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
+from pydantic import BaseModel, Field, ValidationError
 
 from .config import settings
 from .frame_policy import decide_frame
@@ -40,9 +41,9 @@ from .telemetry import (
     tracker_window,
     tracking_reset_counter,
 )
-from .webrtc import accept_offer, close_all_peers
+from .webrtc import accept_offer, close_all_peers, close_peer
 
-app = FastAPI(title="OmniLive", version="0.8.0")
+app = FastAPI(title="OmniLive", version="0.9.0")
 
 
 class BenchmarkRequest(BaseModel):
@@ -53,6 +54,15 @@ class BenchmarkRequest(BaseModel):
     frames: int = Field(default=20, ge=1, le=120)
     force_region: bool = True
     respect_inference_budget: bool = False
+
+
+class LiveSocketStart(BaseModel):
+    action: str = "start"
+    profile: QualityProfile = QualityProfile.BALANCED
+    effect: EffectProfile = EffectProfile.ORIGINAL
+    region_hint: str | None = None
+    sdp: str = Field(min_length=1)
+    type: str = "offer"
 
 
 def _window_payload(window) -> dict:
@@ -123,6 +133,72 @@ def telemetry():
 @app.get("/v1/ice", response_model=IceConfig)
 def ice_config():
     return current_ice_config()
+
+
+@app.websocket("/v1/live")
+async def live_socket(websocket: WebSocket):
+    await websocket.accept()
+    session = None
+    try:
+        payload = await websocket.receive_json()
+        if payload.get("action") != "start":
+            await websocket.send_json({"event": "error", "detail": "first message must be start"})
+            return
+        try:
+            start = LiveSocketStart.model_validate(payload)
+        except ValidationError:
+            await websocket.send_json({"event": "error", "detail": "invalid live start payload"})
+            return
+
+        session = registry.create(start.profile, start.effect, start.region_hint)
+        answer = await accept_offer(
+            WebRtcOffer(
+                session_id=session.session_id,
+                token=session.token,
+                sdp=start.sdp,
+                type=start.type,
+            )
+        )
+        await websocket.send_json(
+            {
+                "event": "answer",
+                "session_id": session.session_id,
+                "token": session.token,
+                "expires_at": session.expires_at,
+                "profile": session.profile.value,
+                "effect": session.effect.value,
+                "sdp": answer.sdp,
+                "type": answer.type,
+            }
+        )
+
+        while int(time.time()) < session.expires_at:
+            try:
+                message = await asyncio.wait_for(websocket.receive_json(), timeout=2.0)
+            except asyncio.TimeoutError:
+                await websocket.send_json({"event": "telemetry", "telemetry": telemetry_payload()})
+                continue
+
+            action = message.get("action")
+            if action == "stop":
+                break
+            if action == "ping":
+                await websocket.send_json({"event": "pong", "telemetry": telemetry_payload()})
+            else:
+                await websocket.send_json({"event": "error", "detail": "unsupported live action"})
+
+        if int(time.time()) >= session.expires_at:
+            await websocket.send_json({"event": "expired"})
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        try:
+            await websocket.send_json({"event": "error", "detail": "live session failed"})
+        except Exception:
+            pass
+    finally:
+        if session is not None:
+            await close_peer(session.session_id)
 
 
 @app.post("/v1/benchmark")

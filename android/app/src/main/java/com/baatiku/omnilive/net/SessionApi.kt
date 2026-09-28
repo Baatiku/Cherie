@@ -47,10 +47,7 @@ object SessionApi {
         }
     }
 
-    fun telemetry(baseUrl:String):BackendTelemetry {
-        val conn=connection(baseUrl.trimEnd('/')+"/v1/telemetry","GET")
-        check(conn.responseCode in 200..299) { "Telemetry failed: "+conn.responseCode }
-        val json=JSONObject(conn.inputStream.bufferedReader().use { it.readText() })
+    fun parseTelemetry(json:JSONObject):BackendTelemetry {
         return BackendTelemetry(
             processorP95Ms=json.optDouble("processor_p95_ms",0.0).toLong(),
             detectorP95Ms=json.optDouble("detector_p95_ms",0.0).toLong(),
@@ -59,6 +56,12 @@ object SessionApi {
             droppedInferenceFrames=json.optLong("dropped_inference_frames",0L),
             inputOverwrittenFrames=json.optLong("input_overwritten_frames",0L)
         )
+    }
+
+    fun telemetry(baseUrl:String):BackendTelemetry {
+        val conn=connection(baseUrl.trimEnd('/')+"/v1/telemetry","GET")
+        check(conn.responseCode in 200..299) { "Telemetry failed: "+conn.responseCode }
+        return parseTelemetry(JSONObject(conn.inputStream.bufferedReader().use { it.readText() }))
     }
 
     fun exchangeOffer(baseUrl:String,session:LiveSession,sdp:String):Pair<String,String> {

@@ -7,7 +7,14 @@ import android.net.NetworkCapabilities
 import com.baatiku.omnilive.net.LiveSession
 import com.baatiku.omnilive.net.SessionApi
 import kotlinx.coroutines.*
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.Response
+import okhttp3.WebSocket
+import okhttp3.WebSocketListener
+import org.json.JSONObject
 import org.webrtc.*
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.max
 
@@ -21,10 +28,12 @@ class WebRtcClient(
     private val scope=CoroutineScope(SupervisorJob()+Dispatchers.IO)
     private val egl=EglBase.create()
     private val connectivity=context.getSystemService(ConnectivityManager::class.java)
+    private val httpClient=OkHttpClient.Builder().pingInterval(20,TimeUnit.SECONDS).build()
     private lateinit var factory:PeerConnectionFactory
     private var capturer:CameraVideoCapturer?=null
     private var localTrack:VideoTrack?=null
     private var peer:PeerConnection?=null
+    @Volatile private var liveSocket:WebSocket?=null
     private var localDescriptionReady=false
     private var session:LiveSession?=null
     private var iceServers:List<PeerConnection.IceServer> = emptyList()
@@ -49,9 +58,7 @@ class WebRtcClient(
             hasSeenNetwork=true
             currentNetwork=network
             LiveTelemetry.update { it.copy(networkState="available") }
-            if(!firstNetwork && previous!=network && !stopped.get()) {
-                reconnectForNetworkChange()
-            }
+            if(!firstNetwork && previous!=network && !stopped.get()) reconnectForNetworkChange()
         }
 
         override fun onLost(network:Network) {
@@ -87,10 +94,11 @@ class WebRtcClient(
     private fun connect() {
         if(stopped.get()) return
         connectJob?.cancel()
+        closeLiveSocket("reconnect")
         LiveTelemetry.update { it.copy(connectionState="starting",lastError=null) }
         connectJob=scope.launch {
             try {
-                session=SessionApi.create(baseUrl,activeProfileName,effectName)
+                session=null
                 iceServers=SessionApi.iceServers(baseUrl).map { cfg ->
                     PeerConnection.IceServer.builder(cfg.urls)
                         .setUsername(cfg.username)
@@ -157,30 +165,114 @@ class WebRtcClient(
 
         statsJob?.cancel()
         statsJob=scope.launch {
-            var backendPollCounter=0
             while(isActive) {
                 delay(2000)
                 collectStats()
-                backendPollCounter++
-                if(backendPollCounter>=3) {
-                    backendPollCounter=0
-                    try {
-                        val backend=SessionApi.telemetry(baseUrl)
-                        backendP95Ms=backend.processorP95Ms
-                        LiveTelemetry.update {
-                            it.copy(
-                                backendProcessorP95Ms=backend.processorP95Ms,
-                                backendDetectorP95Ms=backend.detectorP95Ms,
-                                backendModelP95Ms=backend.modelP95Ms,
-                                targetNeuralFps=backend.targetNeuralFps,
-                                droppedInferenceFrames=backend.droppedInferenceFrames,
-                                inputOverwrittenFrames=backend.inputOverwrittenFrames
-                            )
-                        }
-                    } catch(_:Throwable) {}
-                }
             }
         }
+    }
+
+    private fun liveWebSocketUrl():String {
+        val base=baseUrl.trimEnd('/')
+        val websocketBase=when {
+            base.startsWith("https://") -> "wss://"+base.removePrefix("https://")
+            base.startsWith("http://") -> "ws://"+base.removePrefix("http://")
+            base.startsWith("wss://") || base.startsWith("ws://") -> base
+            else -> "ws://"+base
+        }
+        return websocketBase+"/v1/live"
+    }
+
+    private fun applyBackendTelemetry(backend:com.baatiku.omnilive.net.BackendTelemetry) {
+        backendP95Ms=backend.processorP95Ms
+        LiveTelemetry.update {
+            it.copy(
+                backendProcessorP95Ms=backend.processorP95Ms,
+                backendDetectorP95Ms=backend.detectorP95Ms,
+                backendModelP95Ms=backend.modelP95Ms,
+                targetNeuralFps=backend.targetNeuralFps,
+                droppedInferenceFrames=backend.droppedInferenceFrames,
+                inputOverwrittenFrames=backend.inputOverwrittenFrames
+            )
+        }
+    }
+
+    private fun openLiveSocket(sdp:String) {
+        if(stopped.get()) return
+        closeLiveSocket("replace")
+        val request=Request.Builder().url(liveWebSocketUrl()).build()
+        val listener=object:WebSocketListener() {
+            override fun onOpen(webSocket:WebSocket,response:Response) {
+                if(stopped.get()) {
+                    webSocket.close(1000,"stopped")
+                    return
+                }
+                LiveTelemetry.update { it.copy(connectionState="signaling",lastError=null) }
+                val message=JSONObject()
+                    .put("action","start")
+                    .put("profile",activeProfileName)
+                    .put("effect",effectName)
+                    .put("type","offer")
+                    .put("sdp",sdp)
+                webSocket.send(message.toString())
+            }
+
+            override fun onMessage(webSocket:WebSocket,text:String) {
+                if(webSocket!==liveSocket || stopped.get()) return
+                try {
+                    val json=JSONObject(text)
+                    when(json.optString("event")) {
+                        "answer" -> {
+                            session=LiveSession(
+                                json.getString("session_id"),
+                                json.getString("token"),
+                                json.getLong("expires_at")
+                            )
+                            val answerSdp=json.getString("sdp")
+                            val answerType=json.optString("type","answer")
+                            scope.launch(Dispatchers.Main) {
+                                peer?.setRemoteDescription(object:SimpleSdpObserver(){
+                                    override fun onSetFailure(error:String) { fail(error) }
+                                },SessionDescription(SessionDescription.Type.fromCanonicalForm(answerType),answerSdp))
+                            }
+                        }
+                        "telemetry","pong" -> {
+                            json.optJSONObject("telemetry")?.let {
+                                applyBackendTelemetry(SessionApi.parseTelemetry(it))
+                            }
+                        }
+                        "expired" -> {
+                            fail("Live session expired")
+                        }
+                        "error" -> {
+                            fail(json.optString("detail","Live signalling failed"))
+                        }
+                    }
+                } catch(t:Throwable) {
+                    fail(t.message ?: "Invalid live signalling message")
+                }
+            }
+
+            override fun onFailure(webSocket:WebSocket,t:Throwable,response:Response?) {
+                if(webSocket!==liveSocket || stopped.get()) return
+                liveSocket=null
+                fail(t.message ?: "Live signalling socket failed")
+            }
+
+            override fun onClosed(webSocket:WebSocket,code:Int,reason:String) {
+                if(webSocket!==liveSocket || stopped.get()) return
+                liveSocket=null
+                scheduleReconnect()
+            }
+        }
+        liveSocket=httpClient.newWebSocket(request,listener)
+    }
+
+    private fun closeLiveSocket(reason:String) {
+        val socket=liveSocket ?: return
+        liveSocket=null
+        try { socket.send(JSONObject().put("action","stop").toString()) } catch(_:Throwable) {}
+        try { socket.close(1000,reason) } catch(_:Throwable) {}
     }
 
     private fun createPeer():PeerConnection {
@@ -280,17 +372,7 @@ class WebRtcClient(
             if(state==PeerConnection.IceGatheringState.COMPLETE && !localDescriptionReady) {
                 localDescriptionReady=true
                 val local=peer?.localDescription ?: return
-                val live=session ?: return
-                scope.launch {
-                    try {
-                        val answer=SessionApi.exchangeOffer(baseUrl,live,local.description)
-                        withContext(Dispatchers.Main) {
-                            peer?.setRemoteDescription(object:SimpleSdpObserver(){
-                                override fun onSetFailure(error:String) { fail(error) }
-                            },SessionDescription(SessionDescription.Type.fromCanonicalForm(answer.first),answer.second))
-                        }
-                    } catch(t:Throwable) { fail(t.message ?: t.javaClass.simpleName) }
-                }
+                openLiveSocket(local.description)
             }
         }
         override fun onIceCandidate(candidate:IceCandidate) {}
@@ -310,6 +392,7 @@ class WebRtcClient(
         connectJob?.cancel()
         reconnectJob?.cancel()
         statsJob?.cancel()
+        closeLiveSocket("stopped")
         if(networkCallbackRegistered) {
             try { connectivity.unregisterNetworkCallback(networkCallback) } catch(_:Throwable) {}
             networkCallbackRegistered=false
@@ -322,6 +405,8 @@ class WebRtcClient(
         peer?.close()
         peer=null
         if(::factory.isInitialized) factory.dispose()
+        httpClient.connectionPool.evictAll()
+        httpClient.dispatcher.executorService.shutdown()
         egl.release()
         scope.cancel()
         LiveTelemetry.reset()

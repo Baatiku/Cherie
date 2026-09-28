@@ -12,7 +12,8 @@ from .processor import processor
 from .session import registry
 from .telemetry import input_age_window, input_overwrite_counter, media_wait_window
 
-_peers: set[RTCPeerConnection] = set()
+_peers: dict[str, RTCPeerConnection] = {}
+_return_tracks: dict[str, "LowLatencyVideoTrack"] = {}
 
 
 class LatestFrameSource:
@@ -70,6 +71,7 @@ class LowLatencyVideoTrack(MediaStreamTrack):
         self.stream_key = state.session_id
         self.latest = LatestFrameSource(source)
         self.sequence = 0
+        self._closed = False
 
     async def recv(self):
         wait_started = time.perf_counter()
@@ -85,6 +87,9 @@ class LowLatencyVideoTrack(MediaStreamTrack):
         )
 
     def stop(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
         self.latest.close()
         processor.release_stream(self.stream_key)
         super().stop()
@@ -104,44 +109,50 @@ def peer_configuration() -> RTCConfiguration:
     )
 
 
+async def close_peer(session_id: str) -> None:
+    track = _return_tracks.pop(session_id, None)
+    pc = _peers.pop(session_id, None)
+    if track is not None:
+        track.stop()
+    if pc is not None and pc.connectionState != "closed":
+        await pc.close()
+
+
 async def accept_offer(body: WebRtcOffer) -> WebRtcAnswer:
     state = registry.authenticate(body.session_id, body.token)
     if state is None:
         raise PermissionError("invalid or expired session")
 
+    await close_peer(state.session_id)
     pc = RTCPeerConnection(configuration=peer_configuration())
-    _peers.add(pc)
-    returned_track: LowLatencyVideoTrack | None = None
+    _peers[state.session_id] = pc
 
     @pc.on("track")
     def on_track(track):
-        nonlocal returned_track
         if track.kind == "video":
             returned_track = LowLatencyVideoTrack(track, state)
+            _return_tracks[state.session_id] = returned_track
             pc.addTrack(returned_track)
 
         @track.on("ended")
         async def on_ended():
-            if returned_track is not None:
-                returned_track.stop()
-            await pc.close()
-            _peers.discard(pc)
+            await close_peer(state.session_id)
 
     @pc.on("connectionstatechange")
     async def on_connection_state_change():
         if pc.connectionState in {"failed", "closed", "disconnected"}:
-            if returned_track is not None:
-                returned_track.stop()
-            await pc.close()
-            _peers.discard(pc)
+            await close_peer(state.session_id)
 
-    await pc.setRemoteDescription(RTCSessionDescription(sdp=body.sdp, type=body.type))
-    answer = await pc.createAnswer()
-    await pc.setLocalDescription(answer)
-    return WebRtcAnswer(sdp=pc.localDescription.sdp, type=pc.localDescription.type)
+    try:
+        await pc.setRemoteDescription(RTCSessionDescription(sdp=body.sdp, type=body.type))
+        answer = await pc.createAnswer()
+        await pc.setLocalDescription(answer)
+        return WebRtcAnswer(sdp=pc.localDescription.sdp, type=pc.localDescription.type)
+    except Exception:
+        await close_peer(state.session_id)
+        raise
 
 
 async def close_all_peers() -> None:
-    peers = list(_peers)
-    _peers.clear()
-    await asyncio.gather(*(pc.close() for pc in peers), return_exceptions=True)
+    session_ids = list(_peers)
+    await asyncio.gather(*(close_peer(session_id) for session_id in session_ids), return_exceptions=True)

@@ -17,13 +17,14 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.baatiku.omnilive.stream.LiveStreamService
 import com.baatiku.omnilive.stream.LiveTelemetry
 import com.baatiku.omnilive.ui.ReturnedVideoView
+import java.util.Locale
 
-class MainActivity : ComponentActivity() {
-    private val cameraPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+class MainActivity:ComponentActivity() {
+    private val cameraPermission=registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
 
     override fun onCreate(savedInstanceState:Bundle?) {
         super.onCreate(savedInstanceState)
-        if (ContextCompat.checkSelfPermission(this,Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED)
+        if(ContextCompat.checkSelfPermission(this,Manifest.permission.CAMERA)!=PackageManager.PERMISSION_GRANTED)
             cameraPermission.launch(Manifest.permission.CAMERA)
 
         setContent {
@@ -37,12 +38,9 @@ class MainActivity : ComponentActivity() {
                 val telemetry by LiveTelemetry.state.collectAsStateWithLifecycle()
 
                 Surface(Modifier.fillMaxSize()) {
-                    Column(Modifier.fillMaxSize().padding(16.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
+                    Column(Modifier.fillMaxSize().padding(16.dp),verticalArrangement=Arrangement.spacedBy(10.dp)) {
                         Text("OmniLive",style=MaterialTheme.typography.headlineLarge)
-
-                        if (running) {
-                            ReturnedVideoView(Modifier.fillMaxWidth().aspectRatio(16f/9f))
-                        }
+                        if(running) ReturnedVideoView(Modifier.fillMaxWidth().aspectRatio(16f/9f))
 
                         OutlinedTextField(
                             value=backendUrl,
@@ -50,7 +48,7 @@ class MainActivity : ComponentActivity() {
                                 backendUrl=it
                                 getSharedPreferences("omnilive",MODE_PRIVATE).edit().putString("backend_url",it).apply()
                             },
-                            label={ Text("Backend URL") },
+                            label={Text("Backend URL")},
                             singleLine=true,
                             modifier=Modifier.fillMaxWidth()
                         )
@@ -62,7 +60,7 @@ class MainActivity : ComponentActivity() {
                         }
 
                         Button(onClick={
-                            if (!running) {
+                            if(!running) {
                                 ContextCompat.startForegroundService(
                                     this@MainActivity,
                                     Intent(this@MainActivity,LiveStreamService::class.java)
@@ -73,13 +71,13 @@ class MainActivity : ComponentActivity() {
                             running=!running
                         }) { Text(if(running) "Stop live session" else "Start live session") }
 
-                        Text("Connection: " + telemetry.connectionState)
-                        Text("ICE: " + telemetry.iceState)
-                        Text("RTT: " + (telemetry.rttMs?.toString() ?: "—") + " ms")
-                        Text("Frames received: " + (telemetry.framesReceived?.toString() ?: "—"))
-                        if (telemetry.lastError != null) {
-                            Text("Error: " + telemetry.lastError, color=MaterialTheme.colorScheme.error)
-                        }
+                        Text("Connection: "+telemetry.connectionState)
+                        Text("ICE: "+telemetry.iceState)
+                        Text("Adaptive profile: "+telemetry.activeProfile)
+                        Text("RTT: "+(telemetry.rttMs?.toString() ?: "—")+" ms")
+                        Text("Packet loss: "+(telemetry.packetLoss?.let { String.format(Locale.US,"%.1f%%",it*100) } ?: "—"))
+                        Text("Frames received: "+(telemetry.framesReceived?.toString() ?: "—"))
+                        telemetry.lastError?.let { Text("Status: "+it,color=MaterialTheme.colorScheme.error) }
                     }
                 }
             }

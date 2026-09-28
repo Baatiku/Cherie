@@ -3,34 +3,32 @@
 ## Phase 1 — foundation
 - [x] repository repurposed as OmniLive
 - [x] Android project and foreground service
-- [x] adaptive quality / frame-age controls
 - [x] session registry and expiry
-- [x] CI and tests
+- [x] Modal L4 ASGI service
+- [x] tests and CI definitions
 
 ## Phase 2 — realtime transport
-- [x] current WebRTC Android SDK
-- [x] Android PeerConnection + Camera2 capture
-- [x] SDP offer/answer endpoint
-- [x] backend aiortc PeerConnection
-- [x] returned video track
-- [x] server-provided STUN/TURN configuration
+- [x] Android WebRTC + Camera2 capture
+- [x] SDP offer/answer via aiortc
+- [x] returned video track and Android renderer
+- [x] dynamic STUN/TURN configuration
 - [x] runtime backend URL
-- [x] deployable Modal ASGI endpoint on L4
-- [x] returned-video bus + Android renderer
-- [x] WebRTC connection/ICE telemetry
-- [x] RTT/loss/frame stats collection
+- [x] WebRTC RTT/loss/frame telemetry
 - [x] backend media latency window
-- [ ] reconnect/backoff state machine
-- [ ] adaptive bitrate driven by live stats
+- [x] exponential reconnect/backoff
+- [x] adaptive camera resolution/FPS from RTT and loss
+- [x] EGL renderer cleanup
+- [ ] incorporate backend inference p95 into adaptive controller
+- [ ] TURN deployment near target users
 
-## Phase 3 — GPU face processor
-- [ ] FaceFusion-compatible assets
-- [ ] ONNX Runtime CUDA/TensorRT
+## Phase 3 — GPU visual processor
+- [ ] GPU-resident processing interface
+- [ ] ONNX Runtime CUDA/TensorRT image
 - [ ] detector + landmark tracker
-- [ ] identity embedding cache
-- [ ] swap model
-- [ ] masks/color correction/enhancer
-- [ ] temporal inference reuse
+- [ ] temporal crop tracking
+- [ ] visual-effects model adapter
+- [ ] masks/color correction/enhancement
+- [ ] inference p50/p95 telemetry
 
 ## Phase 4 — rooted Android lab adapter
 - [ ] isolated adapter module

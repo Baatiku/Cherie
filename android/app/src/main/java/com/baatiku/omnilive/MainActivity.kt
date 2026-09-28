@@ -23,6 +23,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.baatiku.omnilive.diagnostics.DeviceDiagnostics
+import com.baatiku.omnilive.diagnostics.LiveDiagnostics
 import com.baatiku.omnilive.net.SessionApi
 import com.baatiku.omnilive.stream.LiveStreamService
 import com.baatiku.omnilive.stream.LiveTelemetry
@@ -184,10 +185,20 @@ class MainActivity:ComponentActivity() {
                                     clipboard.setPrimaryClip(
                                         ClipData.newPlainText(
                                             "OmniLive diagnostics",
-                                            deviceSnapshot.asText(
-                                                backendUrl=backendUrl,
-                                                referenceSelected=referencePath!=null
-                                            )
+                                            buildString {
+                                                appendLine(
+                                                    deviceSnapshot.asText(
+                                                        backendUrl=backendUrl,
+                                                        referenceSelected=referencePath!=null
+                                                    )
+                                                )
+                                                appendLine(
+                                                    "Backend preflight: "+
+                                                        (backendCheckStatus ?: "not run")
+                                                )
+                                                appendLine()
+                                                append(LiveDiagnostics.asText(telemetry))
+                                            }
                                         )
                                     )
                                     diagnosticsStatus="Diagnostics copied."

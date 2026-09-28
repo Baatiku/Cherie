@@ -98,3 +98,17 @@ A source-complete deployment is not the same as a verified live path. Before cal
 - returned frames continue while neural inference is deliberately overloaded
 - Wi-Fi to cellular and cellular to Wi-Fi transitions recover
 - no processor queue grows under overload
+
+
+## Diagnostics and metrics
+
+Runtime diagnostics remain available through:
+
+```text
+GET /health
+GET /v1/model
+GET /v1/telemetry
+GET /metrics
+```
+
+`/metrics` is Prometheus text format and exports processor/model/input-age latency, stale-frame and inference counters, active streams, adaptive neural/crop state, model-load state, and memory gauges when available.

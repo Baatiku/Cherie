@@ -4,7 +4,7 @@ import uuid
 
 import numpy as np
 from av import VideoFrame
-from fastapi import FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Header, HTTPException, Response, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field, ValidationError
 
 from .config import settings
@@ -315,9 +315,82 @@ def telemetry_payload():
     }
 
 
+def _health_state(payload: dict) -> tuple[bool, str]:
+    if payload.get("configured") and not payload.get("loaded"):
+        return False, "model_unavailable"
+    return True, "ok"
+
+
+def _metric_line(name: str, value, labels: dict[str, str] | None = None) -> str:
+    label_text = ""
+    if labels:
+        escaped = []
+        for key, raw in labels.items():
+            value_text = str(raw).replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+            escaped.append(f'{key}="{value_text}"')
+        label_text = "{" + ",".join(escaped) + "}"
+    return f"{name}{label_text} {value}"
+
+
+def prometheus_payload() -> str:
+    payload = telemetry_payload()
+    memory = runtime.memory_status()
+    lines = [
+        "# TYPE omnilive_processor_latency_ms gauge",
+        _metric_line("omnilive_processor_latency_ms", payload["processor_p50_ms"], {"quantile": "0.50"}),
+        _metric_line("omnilive_processor_latency_ms", payload["processor_p95_ms"], {"quantile": "0.95"}),
+        "# TYPE omnilive_model_latency_ms gauge",
+        _metric_line("omnilive_model_latency_ms", payload["model_p50_ms"], {"quantile": "0.50"}),
+        _metric_line("omnilive_model_latency_ms", payload["model_p95_ms"], {"quantile": "0.95"}),
+        "# TYPE omnilive_input_age_ms gauge",
+        _metric_line("omnilive_input_age_ms", payload["input_age_p50_ms"], {"quantile": "0.50"}),
+        _metric_line("omnilive_input_age_ms", payload["input_age_p95_ms"], {"quantile": "0.95"}),
+        "# TYPE omnilive_input_overwritten_frames_total counter",
+        _metric_line("omnilive_input_overwritten_frames_total", payload["input_overwritten_frames"]),
+        "# TYPE omnilive_dropped_inference_frames_total counter",
+        _metric_line("omnilive_dropped_inference_frames_total", payload["dropped_inference_frames"]),
+        "# TYPE omnilive_inference_errors_total counter",
+        _metric_line("omnilive_inference_errors_total", payload["inference_errors"]),
+        "# TYPE omnilive_overload_events_total counter",
+        _metric_line("omnilive_overload_events_total", payload["overload_events"]),
+        "# TYPE omnilive_frame_correlations_total counter",
+        _metric_line("omnilive_frame_correlations_total", payload["frame_correlations"]),
+        "# TYPE omnilive_frame_correlation_drops_total counter",
+        _metric_line("omnilive_frame_correlation_drops_total", payload["frame_correlation_drops"]),
+        "# TYPE omnilive_active_processor_streams gauge",
+        _metric_line("omnilive_active_processor_streams", payload["active_processor_streams"]),
+        "# TYPE omnilive_target_neural_fps gauge",
+        _metric_line("omnilive_target_neural_fps", payload["target_neural_fps"]),
+        "# TYPE omnilive_crop_max_side gauge",
+        _metric_line("omnilive_crop_max_side", payload["crop_max_side"]),
+        "# TYPE omnilive_model_loaded gauge",
+        _metric_line("omnilive_model_loaded", 1 if payload.get("loaded") else 0),
+    ]
+    if memory.get("process_rss_mb") is not None:
+        lines.extend([
+            "# TYPE omnilive_process_rss_mb gauge",
+            _metric_line("omnilive_process_rss_mb", memory["process_rss_mb"]),
+        ])
+    if memory.get("gpu_used_mb") is not None:
+        lines.extend([
+            "# TYPE omnilive_gpu_memory_used_mb gauge",
+            _metric_line("omnilive_gpu_memory_used_mb", memory["gpu_used_mb"]),
+        ])
+    for provider in payload.get("providers") or []:
+        lines.append(_metric_line("omnilive_model_provider_info", 1, {"provider": provider}))
+    return "\n".join(lines) + "\n"
+
+
 @app.get("/health")
 def health():
-    return {"ok": True, "service": "omnilive", "time": int(time.time()), **telemetry_payload()}
+    payload = telemetry_payload()
+    ok, state = _health_state(payload)
+    return {"ok": ok, "status": state, "service": "omnilive", "time": int(time.time()), **payload}
+
+
+@app.get("/metrics")
+def metrics():
+    return Response(content=prometheus_payload(), media_type="text/plain; version=0.0.4")
 
 
 @app.get("/v1/model")

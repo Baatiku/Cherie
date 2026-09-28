@@ -84,7 +84,8 @@ The rooted lab phase remains isolated from transport/model code. The generic out
 - [x] Android battery/charging/temperature and thermal-state telemetry
 - [ ] measured thermal-driven quality policy
 - [ ] GPU worker retry/reallocation
-- [ ] metrics dashboard/export
+- [x] Prometheus-format backend metrics export
+- [ ] metrics dashboard
 - [ ] 30-minute end-to-end soak test
 - [ ] repeated Wi-Fi/cellular handoff test
 - [ ] production TURN failover test

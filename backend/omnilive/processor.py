@@ -12,6 +12,7 @@ from .config import settings
 from .model_runtime import runtime
 from .models import EffectProfile, QualityProfile
 from .regions import LandmarkRegionTracker, OpenCvHaarFaceDetector, Region, RegionDetector
+from .session import registry
 from .telemetry import (
     cache_reuse_counter,
     compositor_window,
@@ -53,7 +54,12 @@ class ProcessingTrace:
 
 
 class VisualProcessor:
-    def process_rgb(self, rgb: np.ndarray, effect: EffectProfile) -> np.ndarray:
+    def process_rgb(
+        self,
+        rgb: np.ndarray,
+        effect: EffectProfile,
+        reference_rgb: np.ndarray | None = None,
+    ) -> np.ndarray:
         if effect == EffectProfile.ORIGINAL:
             return rgb
         if effect == EffectProfile.MONOCHROME:
@@ -69,7 +75,7 @@ class VisualProcessor:
             small = cv2.resize(rgb, (sw, sh), interpolation=cv2.INTER_LINEAR)
             return cv2.resize(small, (w, h), interpolation=cv2.INTER_NEAREST)
         if effect == EffectProfile.CUSTOM_ONNX:
-            return runtime.run_image(rgb)
+            return runtime.run_image(rgb, reference_rgb=reference_rgb)
         return rgb
 
     async def process(self, frame: VideoFrame, effect: EffectProfile) -> VideoFrame:
@@ -90,6 +96,8 @@ class StreamContext:
     cached_transform: np.ndarray | None = None
     cached_at: float = 0.0
     semantic_landmarks: SemanticLandmarks | None = None
+    reference_sha: str | None = None
+    reference_rgb: np.ndarray | None = None
     last_seen: float = field(default_factory=time.perf_counter)
 
     def configure(self, profile_name: str) -> None:
@@ -120,6 +128,8 @@ class LocalizedTemporalProcessor:
             tracker_backend=LandmarkRegionTracker.name,
             landmark_backend=getattr(self.landmark_provider, "name", "none"),
             face_alignment_enabled=settings.face_alignment_enabled,
+            reference_image_ready=context.reference_rgb is not None,
+            model_adapter=runtime.adapter,
         )
 
     def vision_status(self) -> dict:
@@ -140,6 +150,25 @@ class LocalizedTemporalProcessor:
         pipeline_health.update(
             landmark_points=0 if context.semantic_landmarks is None else context.semantic_landmarks.count
         )
+
+    def _reference_rgb(self, context: StreamContext, stream_key: str) -> np.ndarray | None:
+        reference = registry.get_reference_image(stream_key)
+        if reference is None:
+            if context.reference_sha is not None:
+                context.reference_sha = None
+                context.reference_rgb = None
+                context.clear_cache()
+            return None
+        if context.reference_sha == reference.sha256 and context.reference_rgb is not None:
+            return context.reference_rgb
+        encoded = np.frombuffer(reference.jpeg_bytes, dtype=np.uint8)
+        bgr = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
+        if bgr is None or bgr.size == 0:
+            return None
+        context.reference_sha = reference.sha256
+        context.reference_rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+        context.clear_cache()
+        return context.reference_rgb
 
     def _move_landmarks_with_tracker(self, context: StreamContext) -> None:
         landmarks = context.semantic_landmarks
@@ -435,6 +464,10 @@ class LocalizedTemporalProcessor:
         ):
             aligned = align_face(rgb, context.semantic_landmarks, settings.face_alignment_size)
         source_for_model = aligned.image if aligned is not None else crop
+        reference_rgb = self._reference_rgb(context, stream_key) if effect == EffectProfile.CUSTOM_ONNX else None
+        if effect == EffectProfile.CUSTOM_ONNX and runtime.requires_reference and reference_rgb is None:
+            pipeline_health.update(reference_image_ready=False, model_adapter=runtime.adapter)
+            return rgb
         model_input, original_size = self._resize_for_budget(source_for_model, budget.crop_max_side)
         if trace is not None:
             trace.inference_attempted = True
@@ -443,7 +476,7 @@ class LocalizedTemporalProcessor:
         model_started = time.perf_counter()
         overload_before = budget.overload_events
         try:
-            transformed = self.visual.process_rgb(model_input, effect)
+            transformed = self.visual.process_rgb(model_input, effect, reference_rgb=reference_rgb)
             model_ms = (time.perf_counter() - model_started) * 1000.0
             model_window.add(model_ms)
             if trace is not None:

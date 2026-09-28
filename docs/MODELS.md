@@ -193,4 +193,24 @@ The backend:
 
 This deliberately avoids a separate HTTP upload, because an unrelated Modal HTTP request could land on a different GPU container from the pinned live WebSocket.
 
-The current generic single-input `custom_onnx` adapter does not automatically consume the reference image. The session storage is the input contract for a future reference-aware model adapter (for example a two-input identity/style model) without requiring another Android upload redesign.
+The default remains:
+
+```text
+OMNILIVE_MODEL_ADAPTER=single_image
+```
+
+so existing one-input models ignore the reference image and behave exactly as before.
+
+For compatible ONNX models with exactly two image inputs, enable:
+
+```text
+OMNILIVE_MODEL_ADAPTER=dual_image
+OMNILIVE_MODEL_LIVE_INPUT=
+OMNILIVE_MODEL_REFERENCE_INPUT=
+```
+
+When input names are blank, the first ONNX input is treated as the live crop and the second as the reference. Set the names explicitly when a model exports them in another order. Both inputs must be 4D image tensors (NCHW or NHWC); each is resized independently to its declared input geometry.
+
+The live processor decodes the session JPEG once per reference SHA, caches the RGB reference per stream, invalidates the transformed-crop cache when the reference changes, and supplies it only to `custom_onnx`. If a `dual_image` model is selected before a reference arrives, the processor returns the untouched live frame instead of recording repeated inference failures.
+
+Models that require embeddings, latent vectors, masks, or more than two inputs should get a dedicated adapter rather than being forced into this generic two-image contract.

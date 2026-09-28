@@ -1,7 +1,7 @@
 package com.baatiku.omnilive.rootlab
 
 class CompatibilitySessionController(
-    private val target:LabTarget,
+    val target:LabTarget,
     private val rootProbe:RootEnvironmentProbe,
     private val observer:LabSessionObserver?=null
 ) {

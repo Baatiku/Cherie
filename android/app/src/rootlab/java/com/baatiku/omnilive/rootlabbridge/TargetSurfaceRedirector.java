@@ -1,6 +1,8 @@
 package com.baatiku.omnilive.rootlabbridge;
 
 import android.graphics.ImageFormat;
+import android.hardware.camera2.params.OutputConfiguration;
+import android.hardware.camera2.params.SessionConfiguration;
 import android.media.Image;
 import android.media.ImageReader;
 import android.os.Handler;
@@ -42,44 +44,54 @@ final class TargetSurfaceRedirector {
 
         for (int index = 0; index < args.length; index++) {
             Object value = args[index];
+
+            if (value instanceof SessionConfiguration) {
+                SessionConfiguration redirected = redirectSessionConfiguration(
+                    (SessionConfiguration) value
+                );
+                if (redirected == null) return null;
+                Object[] next = args.clone();
+                next[index] = redirected;
+                return next;
+            }
+
             if (!(value instanceof List<?>)) continue;
             List<?> list = (List<?>) value;
             if (list.isEmpty()) continue;
 
-            ArrayList<Surface> originals = new ArrayList<>();
-            boolean allSurfaces = true;
-            for (Object item : list) {
-                if (!(item instanceof Surface)) {
-                    allSurfaces = false;
-                    break;
+            if (allInstancesOf(list, Surface.class)) {
+                ArrayList<Surface> originals = new ArrayList<>();
+                for (Object item : list) {
+                    Surface surface = (Surface) item;
+                    if (surface != null && surface.isValid()) originals.add(surface);
                 }
-                Surface surface = (Surface) item;
-                if (surface != null && surface.isValid()) originals.add(surface);
-            }
-            if (!allSurfaces || originals.isEmpty()) continue;
+                if (originals.isEmpty() || !safeToRedirect(originals)) return null;
 
-            for (Surface original : originals) {
-                if (UNSAFE_TARGETS.contains(original)) {
-                    Log.w(TAG, "session redirect bypassed: request target was built before broker readiness");
+                ArrayList<Surface> dummies = new ArrayList<>(originals.size());
+                try {
+                    for (Surface original : originals) {
+                        dummies.add(ensureReplacement(original).surface);
+                    }
+                } catch (Throwable t) {
+                    Log.w(TAG, "raw Surface session redirect preparation failed", t);
+                    reset();
                     return null;
                 }
+
+                Object[] next = args.clone();
+                next[index] = dummies;
+                return next;
             }
 
-            ArrayList<Surface> dummies = new ArrayList<>(originals.size());
-            try {
-                for (Surface original : originals) {
-                    Replacement replacement = ensureReplacement(original);
-                    dummies.add(replacement.surface);
-                }
-            } catch (Throwable t) {
-                Log.w(TAG, "session redirect preparation failed", t);
-                reset();
-                return null;
+            if (allInstancesOf(list, OutputConfiguration.class)) {
+                @SuppressWarnings("unchecked")
+                List<OutputConfiguration> outputs = (List<OutputConfiguration>) list;
+                List<OutputConfiguration> redirected = redirectOutputConfigurations(outputs);
+                if (redirected == null) return null;
+                Object[] next = args.clone();
+                next[index] = redirected;
+                return next;
             }
-
-            Object[] redirected = args.clone();
-            redirected[index] = dummies;
-            return redirected;
         }
         return null;
     }
@@ -117,6 +129,184 @@ final class TargetSurfaceRedirector {
         REPLACEMENTS.clear();
         UNSAFE_TARGETS.clear();
         Log.i(TAG, "target surface redirector reset");
+    }
+
+    private static SessionConfiguration redirectSessionConfiguration(
+        SessionConfiguration original
+    ) {
+        try {
+            List<OutputConfiguration> outputs = redirectOutputConfigurations(
+                original.getOutputConfigurations()
+            );
+            if (outputs == null || outputs.isEmpty()) return null;
+
+            SessionConfiguration redirected = new SessionConfiguration(
+                original.getSessionType(),
+                outputs,
+                original.getExecutor(),
+                original.getStateCallback()
+            );
+
+            try {
+                if (original.getInputConfiguration() != null) {
+                    redirected.setInputConfiguration(original.getInputConfiguration());
+                }
+            } catch (Throwable t) {
+                Log.w(TAG, "unable to preserve SessionConfiguration input", t);
+            }
+
+            try {
+                if (original.getSessionParameters() != null) {
+                    redirected.setSessionParameters(original.getSessionParameters());
+                }
+            } catch (Throwable t) {
+                Log.w(TAG, "unable to preserve SessionConfiguration parameters", t);
+            }
+
+            copyOptionalProperty(
+                original,
+                redirected,
+                "getColorSpace",
+                "setColorSpace"
+            );
+            return redirected;
+        } catch (Throwable t) {
+            Log.w(TAG, "SessionConfiguration redirect preparation failed", t);
+            reset();
+            return null;
+        }
+    }
+
+    private static List<OutputConfiguration> redirectOutputConfigurations(
+        List<OutputConfiguration> originals
+    ) {
+        if (originals == null || originals.isEmpty()) return null;
+
+        ArrayList<Surface> allOriginalSurfaces = new ArrayList<>();
+        for (OutputConfiguration output : originals) {
+            if (output == null) return null;
+            List<Surface> surfaces;
+            try {
+                surfaces = output.getSurfaces();
+            } catch (Throwable ignored) {
+                Surface surface = output.getSurface();
+                surfaces = surface == null ? Collections.emptyList() : Collections.singletonList(surface);
+            }
+            if (surfaces == null || surfaces.isEmpty()) {
+                Log.i(TAG, "deferred/empty OutputConfiguration left on physical camera");
+                return null;
+            }
+            for (Surface surface : surfaces) {
+                if (surface == null || !surface.isValid()) return null;
+                allOriginalSurfaces.add(surface);
+            }
+        }
+
+        if (!safeToRedirect(allOriginalSurfaces)) return null;
+
+        ArrayList<OutputConfiguration> redirected = new ArrayList<>(originals.size());
+        try {
+            for (OutputConfiguration original : originals) {
+                List<Surface> surfaces;
+                try {
+                    surfaces = original.getSurfaces();
+                } catch (Throwable ignored) {
+                    Surface surface = original.getSurface();
+                    surfaces = surface == null ? Collections.emptyList() : Collections.singletonList(surface);
+                }
+
+                Surface firstDummy = ensureReplacement(surfaces.get(0)).surface;
+                OutputConfiguration copy = new OutputConfiguration(
+                    original.getSurfaceGroupId(),
+                    firstDummy
+                );
+
+                if (surfaces.size() > 1) {
+                    copy.enableSurfaceSharing();
+                    for (int i = 1; i < surfaces.size(); i++) {
+                        copy.addSurface(ensureReplacement(surfaces.get(i)).surface);
+                    }
+                }
+
+                copyOptionalProperty(original, copy, "getPhysicalCameraId", "setPhysicalCameraId");
+                copyOptionalProperty(original, copy, "getDynamicRangeProfile", "setDynamicRangeProfile");
+                copyOptionalProperty(original, copy, "getStreamUseCase", "setStreamUseCase");
+                copyOptionalProperty(original, copy, "getTimestampBase", "setTimestampBase");
+                copyOptionalProperty(original, copy, "getMirrorMode", "setMirrorMode");
+                copyOptionalProperty(original, copy, "isReadoutTimestampEnabled", "setReadoutTimestampEnabled");
+                redirected.add(copy);
+            }
+            return redirected;
+        } catch (Throwable t) {
+            Log.w(TAG, "OutputConfiguration redirect preparation failed", t);
+            reset();
+            return null;
+        }
+    }
+
+    private static boolean safeToRedirect(List<Surface> originals) {
+        for (Surface original : originals) {
+            if (UNSAFE_TARGETS.contains(original)) {
+                Log.w(
+                    TAG,
+                    "session redirect bypassed: request target was built before broker readiness"
+                );
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static boolean allInstancesOf(List<?> values, Class<?> type) {
+        if (values.isEmpty()) return false;
+        for (Object value : values) {
+            if (!type.isInstance(value)) return false;
+        }
+        return true;
+    }
+
+    private static void copyOptionalProperty(
+        Object source,
+        Object target,
+        String getterName,
+        String setterName
+    ) {
+        try {
+            Method getter = source.getClass().getMethod(getterName);
+            Object value = getter.invoke(source);
+            Method setter = findSingleArgumentMethod(target.getClass(), setterName, getter.getReturnType());
+            if (setter != null) setter.invoke(target, value);
+        } catch (NoSuchMethodException ignored) {
+            // Property is not available on this Android release.
+        } catch (Throwable t) {
+            Log.w(TAG, "optional camera metadata copy failed for " + getterName, t);
+        }
+    }
+
+    private static Method findSingleArgumentMethod(
+        Class<?> type,
+        String name,
+        Class<?> expectedType
+    ) {
+        for (Method method : type.getMethods()) {
+            if (!name.equals(method.getName()) || method.getParameterCount() != 1) continue;
+            Class<?> parameter = method.getParameterTypes()[0];
+            if (wrap(parameter).isAssignableFrom(wrap(expectedType))) return method;
+        }
+        return null;
+    }
+
+    private static Class<?> wrap(Class<?> type) {
+        if (!type.isPrimitive()) return type;
+        if (type == boolean.class) return Boolean.class;
+        if (type == byte.class) return Byte.class;
+        if (type == short.class) return Short.class;
+        if (type == int.class) return Integer.class;
+        if (type == long.class) return Long.class;
+        if (type == float.class) return Float.class;
+        if (type == double.class) return Double.class;
+        if (type == char.class) return Character.class;
+        return type;
     }
 
     private static Replacement ensureReplacement(Surface original) {

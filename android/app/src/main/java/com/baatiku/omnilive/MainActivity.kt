@@ -1,6 +1,8 @@
 package com.baatiku.omnilive
 
 import android.Manifest
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
@@ -20,6 +22,8 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.baatiku.omnilive.diagnostics.DeviceDiagnostics
+import com.baatiku.omnilive.net.SessionApi
 import com.baatiku.omnilive.stream.LiveStreamService
 import com.baatiku.omnilive.stream.LiveTelemetry
 import com.baatiku.omnilive.stream.ReferenceImageStore
@@ -53,6 +57,9 @@ class MainActivity:ComponentActivity() {
                     mutableStateOf(ReferenceImageStore.preview(referencePath)?.asImageBitmap())
                 }
                 var referencePickerStatus by remember { mutableStateOf<String?>(null) }
+                var backendChecking by remember { mutableStateOf(false) }
+                var backendCheckStatus by remember { mutableStateOf<String?>(null) }
+                var diagnosticsStatus by remember { mutableStateOf<String?>(null) }
                 var cameraGranted by remember {
                     mutableStateOf(
                         ContextCompat.checkSelfPermission(this@MainActivity,Manifest.permission.CAMERA)
@@ -99,6 +106,9 @@ class MainActivity:ComponentActivity() {
                 }
 
                 val telemetry by LiveTelemetry.state.collectAsStateWithLifecycle()
+                val deviceSnapshot=remember(cameraGranted) {
+                    DeviceDiagnostics.snapshot(this@MainActivity)
+                }
                 val scroll=rememberScrollState()
 
                 Surface(Modifier.fillMaxSize()) {
@@ -120,6 +130,79 @@ class MainActivity:ComponentActivity() {
                             enabled=!running,
                             modifier=Modifier.fillMaxWidth()
                         )
+
+                        Text("Device preflight",style=MaterialTheme.typography.titleMedium)
+                        Text(
+                            "App "+deviceSnapshot.appVersion+" · build "+
+                                deviceSnapshot.buildCommit.take(12)+" · API "+deviceSnapshot.apiLevel
+                        )
+                        Text(
+                            "Device: "+deviceSnapshot.manufacturer+" "+deviceSnapshot.model+
+                                " · camera "+if(deviceSnapshot.cameraGranted) "granted" else "missing"
+                        )
+                        Text("Root lab compiled: "+if(deviceSnapshot.rootLabEnabled) "yes" else "no")
+                        Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(
+                                onClick={
+                                    if(!backendChecking) {
+                                        backendChecking=true
+                                        backendCheckStatus="Checking backend…"
+                                        scope.launch {
+                                            val result=runCatching {
+                                                withContext(Dispatchers.IO) {
+                                                    SessionApi.health(backendUrl)
+                                                }
+                                            }
+                                            backendCheckStatus=result.fold(
+                                                onSuccess={ health ->
+                                                    if(health.ok) {
+                                                        "Backend OK · "+health.status+
+                                                            " · model "+when {
+                                                                !health.modelConfigured -> "not configured"
+                                                                health.modelLoaded -> "loaded"
+                                                                else -> "unavailable"
+                                                            }+
+                                                            (if(health.providers.isNotEmpty())
+                                                                " · "+health.providers.joinToString("/") else "")
+                                                    } else {
+                                                        "Backend not ready · "+health.status
+                                                    }
+                                                },
+                                                onFailure={ error ->
+                                                    "Backend check failed: "+(error.message ?: error.javaClass.simpleName)
+                                                }
+                                            )
+                                            backendChecking=false
+                                        }
+                                    }
+                                },
+                                enabled=!backendChecking && backendUrl.isNotBlank()
+                            ) { Text(if(backendChecking) "Checking…" else "Test backend") }
+                            OutlinedButton(
+                                onClick={
+                                    val clipboard=getSystemService(ClipboardManager::class.java)
+                                    clipboard.setPrimaryClip(
+                                        ClipData.newPlainText(
+                                            "OmniLive diagnostics",
+                                            deviceSnapshot.asText(
+                                                backendUrl=backendUrl,
+                                                referenceSelected=referencePath!=null
+                                            )
+                                        )
+                                    )
+                                    diagnosticsStatus="Diagnostics copied."
+                                }
+                            ) { Text("Copy diagnostics") }
+                        }
+                        backendCheckStatus?.let {
+                            Text(
+                                it,
+                                color=if(it.startsWith("Backend OK"))
+                                    MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.error
+                            )
+                        }
+                        diagnosticsStatus?.let { Text(it) }
 
                         Text("Reference image",style=MaterialTheme.typography.titleMedium)
                         referencePreview?.let { preview ->

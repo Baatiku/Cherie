@@ -84,6 +84,7 @@ public final class OmniLiveXposedModule extends XposedModule {
                     Object first = chain.getArg(0);
                     String cameraId = first instanceof String ? (String) first : "unknown";
                     TargetCameraEventState.onCameraOpenRequested(cameraId);
+                    RootLabSurfaceBrokerClient.ensureConnected();
                     return chain.proceed();
                 });
                 count++;
@@ -109,11 +110,13 @@ public final class OmniLiveXposedModule extends XposedModule {
                         hook(method).intercept(chain -> {
                             List<Surface> outputs = collectSurfaces(chain.getArgs().toArray());
                             TargetCameraEventState.onCaptureSessionRequested(outputs);
+                            RootLabSurfaceBrokerClient.publishSurfaces(outputs);
                             return chain.proceed();
                         });
                     } else if ("close".equals(method.getName())) {
                         hook(method).intercept(chain -> {
                             TargetCameraEventState.onCameraPathClosed(className);
+                            RootLabSurfaceBrokerClient.clearSurfaces();
                             return chain.proceed();
                         });
                     } else {

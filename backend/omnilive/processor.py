@@ -21,6 +21,7 @@ from .telemetry import (
     inference_error_counter,
     landmark_window,
     model_window,
+    model_recovery_skip_counter,
     overload_event_counter,
     pipeline_health,
     processor_window,
@@ -492,6 +493,14 @@ class LocalizedTemporalProcessor:
         reference_rgb = self._reference_rgb(context, stream_key) if effect == EffectProfile.CUSTOM_ONNX else None
         if effect == EffectProfile.CUSTOM_ONNX and runtime.requires_reference and reference_rgb is None:
             pipeline_health.update(reference_image_ready=False, model_adapter=runtime.adapter)
+            return rgb
+        if effect == EffectProfile.CUSTOM_ONNX and not runtime.can_attempt_inference:
+            model_recovery_skip_counter.increment()
+            if self._cached_is_valid(context, now):
+                cache_reuse_counter.increment()
+                cached = context.cached_transform
+                assert cached is not None
+                return self._composite(rgb, region, cached)
             return rgb
         model_input, original_size = self._resize_for_budget(source_for_model, budget.crop_max_side)
         if trace is not None:

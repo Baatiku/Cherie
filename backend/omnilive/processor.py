@@ -620,7 +620,8 @@ class TimedProcessor:
 def _video_frame(rgb: np.ndarray, source: VideoFrame) -> VideoFrame:
     result = VideoFrame.from_ndarray(rgb, format="rgb24")
     result.pts = source.pts
-    result.time_base = source.time_base
+    if source.time_base is not None:
+        result.time_base = source.time_base
     return result
 
 

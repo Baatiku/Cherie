@@ -55,7 +55,7 @@ object LiveDiagnostics {
                 when(state.batteryCharging) { true -> "charging"; false -> "not charging"; null -> "—" }+
                 " / ${state.batteryTemperatureC?.let { String.format(Locale.US,"%.1fC",it) } ?: "—"}"
         )
-        appendLine("Thermal: ${state.thermalStatus}")
+        appendLine("Thermal: ${state.thermalStatus} · cap ${state.thermalQualityCap}")
         appendLine(
             "Reference: ${state.referenceImageStatus} "+
                 if(state.referenceImageWidth!=null && state.referenceImageHeight!=null)

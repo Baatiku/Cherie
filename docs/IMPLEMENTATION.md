@@ -82,8 +82,10 @@
 - [x] GPU-friendly local processed-frame Surface producer with size-1 pending-frame renderer
 - [x] isolated rooted lab module with explicit Gradle opt-in and no normal-app dependency by default
 - [x] package-scoped compatibility lifecycle/state-machine boundary
+- [x] rootlab runtime composition with real `su` capability probe, Android retry scheduler, Zoom target preset and processed-frame bridge
+- [x] separate rootlab-enabled APK build gate (`-Pomnilive.rootLab=true`) so lab-only app sources compile in CI
 - [ ] package-specific camera compatibility implementation
-- [ ] camera lifecycle recovery/fallback
+- [x] isolated rootlab camera lifecycle recovery/rebind policy with bounded retries and physical-camera fallback
 
 The rooted lab phase remains isolated from transport/model code. The generic output boundary and Surface producer are now ready for an isolated lab adapter, but no root-specific code has been mixed into normal OmniLive.
 

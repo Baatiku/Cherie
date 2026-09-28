@@ -153,3 +153,39 @@ OMNILIVE_DEFAULT_BACKEND_URL=https://omnilive-backend-staging.onrender.com
 ```
 
 The staging backend is a CPU transport/install-test target only. Production reference-aware GPU inference still belongs on the Modal L4 deployment.
+
+
+## Verified dual normal/rootlab build
+
+Source commit:
+
+```text
+98dbaada7b8b6fd61b22796209d41e4d5c9138a8
+```
+
+The Render APK gate now performs:
+
+```text
+:app:testDebugUnitTest
+:rootlab:testDebugUnitTest
+:app:assembleDebug
+:app:assembleDebug -Pomnilive.rootLab=true
+```
+
+Both app variants compiled successfully.
+
+Normal APK:
+
+```text
+https://omnilive-apk-builder.onrender.com/omnilive-debug.apk
+SHA-256 718b3c49449370139efddf358a81f8b09c9327c7086d64a9af5c067bb16a6d0e
+```
+
+Rooted-lab APK:
+
+```text
+https://omnilive-apk-builder.onrender.com/omnilive-rootlab-debug.apk
+SHA-256 a72c758c19a74a8a85c5be5f02ab2ba550e29c427e524cd9922e85e9a7472a29
+```
+
+The rootlab APK contains the isolated lab runtime, real `su` capability probe, processed-frame lifecycle bridge, bounded camera rebind/recovery coordinator, physical-camera fallback path, and a Zoom package preset. It does not yet contain the final rooted/device-specific camera redirection adapter that makes another app consume OmniLive frames; that remains the next rootlab implementation phase.

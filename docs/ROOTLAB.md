@@ -13,6 +13,10 @@ The rootlab-enabled APK compiles and links the following pieces:
 - `RootLabProcessedFrameBridge`: forwards returned processed-frame metadata/output availability into the lab boundary
 - `RootLabCompatibilityRuntime`: composes the above pieces for a concrete compatibility adapter
 - `RootLabTargets.zoom()`: target preset for `us.zoom.videomeetings`
+- `OmniLiveXposedModule`: Zoom-scoped libxposed Camera2 open/session/close hooks
+- `RootLabSurfaceBrokerClient`: target-process Messenger client that parcels Zoom Camera2 output `Surface` objects back to OmniLive
+- `RootLabSurfaceBrokerService`: rootlab-only exported broker that accepts messages only from the Zoom UID and binds returned-frame renderers to transferred surfaces
+- `SharedEglContextRegistry`: generic stream-layer EGL handoff so optional outputs share the WebRTC decoder context safely
 
 ## Adapter contract
 
@@ -41,6 +45,29 @@ Default policy:
 - moving the target to background cancels stale recovery work
 - closing the runtime restores physical camera state and stops the session
 
+## Zoom surface-handoff checkpoint
+
+The first package-specific transport is now implemented. The Xposed module observes Zoom Camera2 capture-session outputs and forwards valid `Surface` objects over an explicit Messenger binding to the rootlab-only OmniLive broker. The broker waits for the active WebRTC EGL context and then attempts to create `SurfaceFrameOutput` renderers for every transferred target surface.
+
+This phase is deliberately fail-open: the hooked Zoom Camera2 call still proceeds to the physical camera. That lets the rooted test device tell us whether the vendor/Zoom buffer queue allows a second producer attach before we add camera-session suppression/replacement logic.
+
+The rootlab ADB smoke harness can now report:
+
+- root shell availability
+- broker component packaged in the APK
+- Zoom package installed
+- Xposed Camera2 hook inventory observed
+- target surface attach observed
+
+Use:
+
+```bash
+OMNILIVE_ROOTLAB_MODE=1 \
+OMNILIVE_ROOTLAB_LAUNCH_TARGET=1 \
+OMNILIVE_ROOTLAB_REQUIRE_HOOKS=1 \
+bash ops/android-device-smoke.sh build-artifacts/omnilive-rootlab-debug.apk
+```
+
 ## Remaining device-specific work
 
-The package-specific/rooted camera redirection adapter is not implemented yet. That part depends on the actual rooted test device, Android/vendor camera stack and target app behavior. It should be implemented and validated inside this isolated contract instead of modifying normal OmniLive camera/WebRTC code.
+The remaining package-specific redirection step is no longer surface discovery/transport; it is physical-camera producer suppression or output replacement after real-device validation proves how Zoom/vendor Camera2 owns those transferred surfaces. Do not suppress the physical session until the smoke report confirms hook activation and whether the processed EGL producer can attach successfully.

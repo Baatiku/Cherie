@@ -19,10 +19,17 @@ class WebRtcClient(
     private var peer:PeerConnection? = null
     private var localDescriptionReady = false
     private var session:LiveSession? = null
+    private var iceServers:List<PeerConnection.IceServer> = emptyList()
 
     fun start() {
         scope.launch {
             session = SessionApi.create(baseUrl, profileName)
+            iceServers = SessionApi.iceServers(baseUrl).map { config ->
+                PeerConnection.IceServer.builder(config.urls)
+                    .setUsername(config.username)
+                    .setPassword(config.credential)
+                    .createIceServer()
+            }
             withContext(Dispatchers.Main) { startPeer() }
         }
     }
@@ -44,9 +51,7 @@ class WebRtcClient(
         capturer!!.startCapture(profile.width,profile.height,profile.cameraFps)
 
         val localTrack = factory.createVideoTrack("omnilive-camera",source)
-        val config = PeerConnection.RTCConfiguration(listOf(
-            PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer()
-        )).apply {
+        val config = PeerConnection.RTCConfiguration(iceServers).apply {
             sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
             continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
         }

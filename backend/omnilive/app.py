@@ -1,15 +1,27 @@
 import time
 from fastapi import FastAPI, Header, HTTPException
+from .config import settings
 from .frame_policy import decide_frame
-from .models import CreateSessionRequest, FrameDecision, FrameMeta, SessionResponse, WebRtcAnswer, WebRtcOffer
+from .models import (
+    CreateSessionRequest, FrameDecision, FrameMeta, SessionResponse,
+    WebRtcAnswer, WebRtcOffer, IceConfig, IceServer
+)
 from .session import registry
 from .webrtc import accept_offer, close_all_peers
 
-app = FastAPI(title="OmniLive", version="0.2.0")
+app = FastAPI(title="OmniLive", version="0.3.0")
 
 @app.get("/health")
 def health():
     return {"ok": True, "service": "omnilive", "time": int(time.time())}
+
+@app.get("/v1/ice", response_model=IceConfig)
+def ice_config():
+    return IceConfig(servers=[IceServer(
+        urls=list(settings.ice_urls),
+        username=settings.ice_username,
+        credential=settings.ice_credential,
+    )])
 
 @app.post("/v1/sessions", response_model=SessionResponse)
 def create_session(body: CreateSessionRequest):

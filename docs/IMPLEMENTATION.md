@@ -5,7 +5,6 @@
 - [x] Android project and foreground service
 - [x] adaptive quality / frame-age controls
 - [x] session registry and expiry
-- [x] Modal L4 worker skeleton
 - [x] CI and tests
 
 ## Phase 2 — realtime transport
@@ -14,7 +13,9 @@
 - [x] SDP offer/answer endpoint
 - [x] backend aiortc PeerConnection
 - [x] returned video track
-- [ ] TURN configuration
+- [x] server-provided STUN/TURN configuration
+- [x] runtime backend URL on Android
+- [x] deployable Modal ASGI endpoint on L4
 - [ ] Android returned-track renderer/local Surface
 - [ ] WebRTC RTT/loss stats
 - [ ] reconnect/backoff state machine

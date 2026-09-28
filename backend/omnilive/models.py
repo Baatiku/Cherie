@@ -17,6 +17,14 @@ class SessionResponse(BaseModel):
     expires_at: int
     region_hint: str | None = None
 
+class IceServer(BaseModel):
+    urls: list[str]
+    username: str = ""
+    credential: str = ""
+
+class IceConfig(BaseModel):
+    servers: list[IceServer]
+
 class FrameMeta(BaseModel):
     session_id: str
     sequence: int = Field(ge=0)

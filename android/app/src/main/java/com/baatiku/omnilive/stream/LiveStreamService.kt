@@ -17,16 +17,17 @@ class LiveStreamService:Service() {
     }
 
     override fun onStartCommand(intent:Intent?, flags:Int, startId:Int):Int {
-        val profileName = intent?.getStringExtra("profile") ?: "balanced"
-        val profile = QualityProfile.fromName(profileName)
-        val text = profile.width.toString()+"×"+profile.height+" @ "+profile.cameraFps+" fps"
-        val n = Notification.Builder(this,CHANNEL_ID)
+        val profileName=intent?.getStringExtra("profile") ?: "balanced"
+        val backendUrl=intent?.getStringExtra("backend_url") ?: BuildConfig.DEFAULT_BACKEND_URL
+        val profile=QualityProfile.fromName(profileName)
+        val text=profile.width.toString()+"×"+profile.height+" @ "+profile.cameraFps+" fps"
+        val n=Notification.Builder(this,CHANNEL_ID)
             .setContentTitle("OmniLive active").setContentText(text)
             .setSmallIcon(android.R.drawable.presence_video_online).build()
         startForeground(NOTIFICATION_ID,n)
 
-        if (client == null) {
-            client = WebRtcClient(this,BuildConfig.DEFAULT_BACKEND_URL,profileName)
+        if(client==null) {
+            client=WebRtcClient(this,backendUrl,profileName)
             client!!.start()
         }
         return START_NOT_STICKY
@@ -34,9 +35,8 @@ class LiveStreamService:Service() {
 
     override fun onDestroy() {
         client?.stop()
-        client = null
+        client=null
         super.onDestroy()
     }
-
-    override fun onBind(intent:Intent?):IBinder? = null
+    override fun onBind(intent:Intent?):IBinder?=null
 }

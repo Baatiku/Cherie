@@ -335,3 +335,61 @@ OMNILIVE_ROOTLAB_REQUIRE_FRAME_PRESENTED=1
 ```
 
 The source implementation is complete enough for this device gate, but the build result alone does not prove that Zoom displays the returned OmniLive frames on a particular rooted/OEM device. That remains the next external validation step.
+
+
+## Current phone/rootlab validation build — AGP 8.10.1
+
+Application source:
+
+```text
+421ae37687919b2f56444607d9117b9b0555cb38
+```
+
+This checkpoint aligns the Android dexer/shrinker with Kotlin 2.2.21:
+
+```text
+AGP 8.10.1
+Gradle 8.11.1
+Kotlin / Compose 2.2.21
+JDK 17
+```
+
+The prior AGP 8.7.3 / R8 8.7.18 build emitted Kotlin-metadata rewrite warnings because the R8 generation predated Kotlin 2.2 metadata. The current build completed without those Kotlin-metadata warnings.
+
+It also includes phone-visible rootlab diagnostics for the Zoom compatibility path:
+
+- Zoom broker connection
+- broker / EGL / returned-stream readiness
+- Xposed manager/session/close hook counters
+- camera-open/session/close counters
+- latest camera id and target-surface count
+- requested vs attached transferred surfaces
+- first successful returned-frame presentation
+- latest target hook error
+- Copy diagnostics includes the full rootlab JSON snapshot
+
+Verified tasks:
+
+```text
+:app:testDebugUnitTest
+:rootlab:testDebugUnitTest
+:app:assembleDebug
+:app:assembleDebug -Pomnilive.rootLab=true
+BUILD SUCCESSFUL
+```
+
+Normal APK:
+
+```text
+https://omnilive-apk-builder.onrender.com/omnilive-debug.apk
+SHA-256 109cd99a785015b3632b46a1713154531f587427e0c42f9e65fe848756065382
+```
+
+Rootlab APK:
+
+```text
+https://omnilive-apk-builder.onrender.com/omnilive-rootlab-debug.apk
+SHA-256 39b9cd5b1f4d3b2a8a5b88c5ca80929996f40a47fb5bff634715779e739dfce5
+```
+
+Backend CI and the deployed CPU staging smoke both passed the same source commit. The remaining Zoom/rootlab gate is empirical validation on the actual rooted device; a successful build does not prove that the installed Zoom version displays the returned frame stream.

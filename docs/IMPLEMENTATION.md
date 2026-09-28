@@ -7,8 +7,8 @@
 - [x] Modal L4 ASGI service
 - [x] named Modal runtime Secret attached to the L4 function
 - [x] tests and CI definitions
-- [x] explicit Gradle 8.9 CI toolchain
-- [x] Kotlin/Compose compiler plugin aligned to 2.2.21 for Gradle 8.9 / AGP 8.7.x compatibility
+- [x] explicit Gradle 8.11.1 / AGP 8.10.1 / JDK 17 Android build toolchain
+- [x] Kotlin/Compose compiler plugin 2.2.21 aligned with AGP 8.10.1 / R8 8.10.x so D8 can parse Kotlin 2.2 metadata cleanly
 - [x] lightweight CPU test dependencies separated from GPU image
 
 ## Phase 2 — realtime transport
@@ -95,6 +95,7 @@
   - [x] post-create `prepare`, `tearDown`, `updateOutputConfiguration` and `finalizeOutputConfigurations` argument substitution
   - [x] sticky physical/redirect session selection across multi-surface request construction and temporary returned-stream gaps
   - [x] one-shot EGL swap logging so device smoke can prove an OmniLive returned frame reached a transferred Zoom Surface
+  - [x] phone-visible rootlab diagnostics for broker readiness, hook/session counts, target-surface attachment and first returned-frame presentation
   - [ ] rooted-device validation that Zoom actually displays the returned OmniLive frames
 - [x] isolated rootlab camera lifecycle recovery/rebind policy with bounded retries and physical-camera fallback
 
@@ -134,6 +135,50 @@ The rooted lab phase remains isolated from transport/model code. Normal APKs use
 - [x] rootlab device smoke can independently require hook activation, Camera2 redirection and first returned-frame presentation to a Zoom target Surface
 - [x] backend CI passed 51 tests on application source commit `1b97d2522ed179f2d3c8d7496238d5b92d7d56c0` (one upstream Starlette/TestClient deprecation warning remains)
 - [x] zero-cost CPU staging backend is live at `https://omnilive-backend-staging.onrender.com` for install/session/WebRTC transport testing; it is not the production Modal GPU backend
+
+## Current verified Android/backend checkpoint — 2026-09-28
+
+Source commit:
+
+```text
+421ae37687919b2f56444607d9117b9b0555cb38
+```
+
+Android build gate:
+
+- AGP 8.10.1
+- Gradle 8.11.1
+- Kotlin / Compose 2.2.21
+- JDK 17
+- Android API 35 / build-tools 35.0.0
+- `:app:testDebugUnitTest` passed
+- `:rootlab:testDebugUnitTest` passed
+- normal `:app:assembleDebug` passed
+- rootlab `:app:assembleDebug -Pomnilive.rootLab=true` passed
+- the earlier D8/R8 Kotlin-metadata rewrite warnings are absent from this build
+
+Current artifacts:
+
+```text
+normal:
+https://omnilive-apk-builder.onrender.com/omnilive-debug.apk
+SHA-256 109cd99a785015b3632b46a1713154531f587427e0c42f9e65fe848756065382
+
+rootlab:
+https://omnilive-apk-builder.onrender.com/omnilive-rootlab-debug.apk
+SHA-256 39b9cd5b1f4d3b2a8a5b88c5ca80929996f40a47fb5bff634715779e739dfce5
+```
+
+The rootlab APK now shows live phone-side validation state for Zoom connection, broker/EGL/returned-stream readiness, hook/session counts, requested/attached target surfaces, hook errors and first returned-frame presentation. The same snapshot is included by the Copy diagnostics action.
+
+Backend gates on the same commit are green:
+
+- Render Free backend CI is live
+- CPU unit tests passed
+- deployed staging smoke passed against the exact tested commit
+- staging smoke covers health, metrics, ICE, disposable session auth/cleanup and the live WebSocket probe
+
+The CPU staging backend remains a transport/install validation target, not the production GPU inference service.
 
 ## Current external gates
 

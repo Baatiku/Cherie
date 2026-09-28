@@ -15,6 +15,14 @@ echo "==> Running OmniLive backend tests"
 cd "${ROOT_DIR}"
 PYTHONPATH=backend python -m pytest -q backend/tests | tee "${REPORT}"
 
+SMOKE_REPORT="${ARTIFACT_DIR}/staging-smoke.txt"
+if [[ -n "${OMNILIVE_STAGING_URL:-}" ]]; then
+  echo "==> Waiting for and smoke-testing exact staging deployment"
+  python "${ROOT_DIR}/ops/staging-smoke.py" | tee "${SMOKE_REPORT}"
+else
+  printf '%s\n' "Skipped: OMNILIVE_STAGING_URL is not configured." > "${SMOKE_REPORT}"
+fi
+
 BUILD_SHA="${RENDER_GIT_COMMIT:-unknown}"
 cat > "${ARTIFACT_DIR}/index.html" <<HTML
 <!doctype html>
@@ -28,9 +36,9 @@ cat > "${ARTIFACT_DIR}/index.html" <<HTML
   <h1>OmniLive backend CI</h1>
   <p>Status: passed</p>
   <p>Commit: <code>${BUILD_SHA}</code></p>
-  <p><a href="/pytest.txt">pytest output</a></p>
+  <p><a href="/pytest.txt">pytest output</a></p>\n  <p><a href="/staging-smoke.txt">staging smoke output</a></p>
 </body>
 </html>
 HTML
 
-echo "==> Backend test suite passed for ${BUILD_SHA}"
+echo "==> Backend unit and staging smoke gates passed for ${BUILD_SHA}"

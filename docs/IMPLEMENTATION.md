@@ -14,11 +14,14 @@
 - [x] backend aiortc PeerConnection
 - [x] returned video track
 - [x] server-provided STUN/TURN configuration
-- [x] runtime backend URL on Android
+- [x] runtime backend URL
 - [x] deployable Modal ASGI endpoint on L4
-- [ ] Android returned-track renderer/local Surface
-- [ ] WebRTC RTT/loss stats
+- [x] returned-video bus + Android renderer
+- [x] WebRTC connection/ICE telemetry
+- [x] RTT/loss/frame stats collection
+- [x] backend media latency window
 - [ ] reconnect/backoff state machine
+- [ ] adaptive bitrate driven by live stats
 
 ## Phase 3 — GPU face processor
 - [ ] FaceFusion-compatible assets
@@ -36,7 +39,6 @@
 - [ ] lifecycle recovery/fallback
 
 ## Phase 5 — hardening
-- [ ] adaptive bitrate
 - [ ] thermal/battery handling
 - [ ] GPU worker retry
 - [ ] metrics dashboard

@@ -13,7 +13,10 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.baatiku.omnilive.stream.LiveStreamService
+import com.baatiku.omnilive.stream.LiveTelemetry
+import com.baatiku.omnilive.ui.ReturnedVideoView
 
 class MainActivity : ComponentActivity() {
     private val cameraPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
@@ -31,11 +34,15 @@ class MainActivity : ComponentActivity() {
                     mutableStateOf(getSharedPreferences("omnilive",MODE_PRIVATE)
                         .getString("backend_url",BuildConfig.DEFAULT_BACKEND_URL) ?: BuildConfig.DEFAULT_BACKEND_URL)
                 }
+                val telemetry by LiveTelemetry.state.collectAsStateWithLifecycle()
 
                 Surface(Modifier.fillMaxSize()) {
-                    Column(Modifier.fillMaxSize().padding(24.dp),verticalArrangement=Arrangement.spacedBy(16.dp)) {
+                    Column(Modifier.fillMaxSize().padding(16.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
                         Text("OmniLive",style=MaterialTheme.typography.headlineLarge)
-                        Text("Mobile AI camera test client")
+
+                        if (running) {
+                            ReturnedVideoView(Modifier.fillMaxWidth().aspectRatio(16f/9f))
+                        }
 
                         OutlinedTextField(
                             value=backendUrl,
@@ -48,7 +55,6 @@ class MainActivity : ComponentActivity() {
                             modifier=Modifier.fillMaxWidth()
                         )
 
-                        Text("Quality")
                         Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
                             listOf("low_latency","balanced","high").forEach { item ->
                                 FilterChip(selected=profile==item,onClick={profile=item},label={Text(item)})
@@ -67,7 +73,13 @@ class MainActivity : ComponentActivity() {
                             running=!running
                         }) { Text(if(running) "Stop live session" else "Start live session") }
 
-                        Text(if(running) "Session active" else "Idle")
+                        Text("Connection: " + telemetry.connectionState)
+                        Text("ICE: " + telemetry.iceState)
+                        Text("RTT: " + (telemetry.rttMs?.toString() ?: "—") + " ms")
+                        Text("Frames received: " + (telemetry.framesReceived?.toString() ?: "—"))
+                        if (telemetry.lastError != null) {
+                            Text("Error: " + telemetry.lastError, color=MaterialTheme.colorScheme.error)
+                        }
                     }
                 }
             }

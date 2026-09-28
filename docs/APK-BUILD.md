@@ -119,3 +119,37 @@ SHA-256:
 ```text
 68dbf6f83f291215108bad12b783c4e09f4969cd27c662b16ed0aac5611f7cd6
 ```
+
+
+## Latest phone-test build
+
+Application source:
+
+```text
+9688e1edbee7ec086dac4e055713b3044f5d7b20
+```
+
+This build includes the thermal-aware adaptive controller, active thermal-cap telemetry, device/backend preflight, the staging-backend build default, reference-image status, and a copyable live diagnostic report that includes the active thermal quality ceiling.
+
+Verified tasks:
+
+```text
+:app:testDebugUnitTest
+:rootlab:testDebugUnitTest
+:app:assembleDebug
+BUILD SUCCESSFUL
+```
+
+SHA-256:
+
+```text
+963e92760ae1d74fcbce67e86c67ef841a46e4da2eb32dd183b12171c8b29a03
+```
+
+The Render APK builder currently injects:
+
+```text
+OMNILIVE_DEFAULT_BACKEND_URL=https://omnilive-backend-staging.onrender.com
+```
+
+The staging backend is a CPU transport/install-test target only. Production reference-aware GPU inference still belongs on the Modal L4 deployment.

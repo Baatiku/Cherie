@@ -120,14 +120,23 @@ public final class OmniLiveXposedModule extends XposedModule {
 
                     boolean ready = RootLabSurfaceBrokerClient.isReadyForRedirect();
                     boolean alreadyRedirected = TargetSurfaceRedirector.isRedirected(original);
-                    if ("addTarget".equals(name) && !ready && !alreadyRedirected) {
-                        TargetSurfaceRedirector.markUnsafeTarget(original);
-                        return chain.proceed();
+                    boolean preparedRedirect = TargetSurfaceRedirector.hasPreparedMappings();
+                    boolean preparedPhysical = TargetSurfaceRedirector.hasUnsafeTargets();
+
+                    if ("addTarget".equals(name) && !alreadyRedirected) {
+                        if (preparedPhysical) {
+                            TargetSurfaceRedirector.markUnsafeTarget(original);
+                            return chain.proceed();
+                        }
+                        if (!ready && !preparedRedirect) {
+                            TargetSurfaceRedirector.markUnsafeTarget(original);
+                            return chain.proceed();
+                        }
                     }
 
                     Surface replacement = TargetSurfaceRedirector.substituteTarget(
                         original,
-                        "addTarget".equals(name) && ready
+                        "addTarget".equals(name) && (ready || preparedRedirect)
                     );
                     if (!ready && alreadyRedirected) {
                         Log.i(
@@ -204,6 +213,14 @@ public final class OmniLiveXposedModule extends XposedModule {
 
                             boolean brokerReady = RootLabSurfaceBrokerClient.isReadyForRedirect();
                             boolean preparedMappings = TargetSurfaceRedirector.hasPreparedMappings();
+                            boolean preparedPhysical = TargetSurfaceRedirector.hasUnsafeTargets();
+                            if (preparedPhysical) {
+                                TargetSurfaceRedirector.reset();
+                                TargetSurfaceRedirector.markPhysicalSession();
+                                RootLabSurfaceBrokerClient.clearSurfaces();
+                                Log.i(TAG, "capture session kept physical: request targets committed before redirect readiness");
+                                return chain.proceed();
+                            }
                             if (!brokerReady && !preparedMappings) {
                                 TargetSurfaceRedirector.reset();
                                 TargetSurfaceRedirector.markPhysicalSession();

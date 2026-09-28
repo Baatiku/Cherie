@@ -484,6 +484,19 @@ async def live_socket(websocket: WebSocket):
     timing_bridge = FrameTimingBridge(publish_timing)
     try:
         payload = await websocket.receive_json()
+        if payload.get("action") == "probe":
+            ice = current_ice_config()
+            await send_json(
+                {
+                    "event": "probe",
+                    "ok": True,
+                    "service": "omnilive",
+                    "time": int(time.time()),
+                    "ice_server_count": len(ice.servers),
+                    "credential_mode": ice.credential_mode,
+                }
+            )
+            return
         if payload.get("action") != "start":
             await send_json({"event": "error", "detail": "first message must be start"})
             return
@@ -683,6 +696,37 @@ def create_session(body: CreateSessionRequest):
     return registry.create(body.profile, body.effect, body.region_hint)
 
 
+def _authorized_session(session_id: str, authorization: str | None):
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="missing bearer token")
+    token = authorization.removeprefix("Bearer ").strip()
+    state = registry.authenticate(session_id, token)
+    if state is None:
+        raise HTTPException(status_code=401, detail="invalid or expired session")
+    return state
+
+
+@app.get("/v1/sessions/{session_id}/validate")
+def validate_session(session_id: str, authorization: str | None = Header(default=None)):
+    state = _authorized_session(session_id, authorization)
+    return {
+        "ok": True,
+        "session_id": state.session_id,
+        "profile": state.profile.value,
+        "effect": state.effect.value,
+        "expires_at": state.expires_at,
+    }
+
+
+@app.delete("/v1/sessions/{session_id}")
+async def delete_session(session_id: str, authorization: str | None = Header(default=None)):
+    _authorized_session(session_id, authorization)
+    await close_peer(session_id)
+    processor.release_stream(session_id)
+    removed = registry.discard(session_id)
+    return {"ok": removed, "session_id": session_id}
+
+
 @app.post("/v1/webrtc/offer", response_model=WebRtcAnswer)
 async def webrtc_offer(body: WebRtcOffer):
     try:
@@ -693,12 +737,7 @@ async def webrtc_offer(body: WebRtcOffer):
 
 @app.post("/v1/frames/decision", response_model=FrameDecision)
 def frame_decision(body: FrameMeta, authorization: str | None = Header(default=None)):
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="missing bearer token")
-    token = authorization.removeprefix("Bearer ").strip()
-    state = registry.authenticate(body.session_id, token)
-    if state is None:
-        raise HTTPException(status_code=401, detail="invalid or expired session")
+    state = _authorized_session(body.session_id, authorization)
     if body.sequence <= state.last_sequence:
         return FrameDecision(accept=False, age_ms=0, reason="out_of_order")
     decision = decide_frame(body)

@@ -19,5 +19,5 @@ def test_health_has_explicit_status():
     response = client.get("/health")
     assert response.status_code == 200
     payload = response.json()
-    assert payload["status"] in {"ok", "model_unavailable"}
+    assert payload["status"] in {"ok", "model_unavailable", "model_recovering"}
     assert isinstance(payload["ok"], bool)

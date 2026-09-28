@@ -114,6 +114,10 @@ public final class OmniLiveXposedModule extends XposedModule {
                     if (!(first instanceof Surface)) return chain.proceed();
 
                     Surface original = (Surface) first;
+                    if (TargetSurfaceRedirector.isPhysicalSessionLocked()) {
+                        return chain.proceed();
+                    }
+
                     boolean ready = RootLabSurfaceBrokerClient.isReadyForRedirect();
                     boolean alreadyRedirected = TargetSurfaceRedirector.isRedirected(original);
                     if ("addTarget".equals(name) && !ready && !alreadyRedirected) {
@@ -198,21 +202,32 @@ public final class OmniLiveXposedModule extends XposedModule {
                             List<Surface> outputs = collectSurfaces(args);
                             TargetCameraEventState.onCaptureSessionRequested(outputs);
 
-                            if (!RootLabSurfaceBrokerClient.isReadyForRedirect()) {
+                            boolean brokerReady = RootLabSurfaceBrokerClient.isReadyForRedirect();
+                            boolean preparedMappings = TargetSurfaceRedirector.hasPreparedMappings();
+                            if (!brokerReady && !preparedMappings) {
                                 TargetSurfaceRedirector.reset();
+                                TargetSurfaceRedirector.markPhysicalSession();
                                 RootLabSurfaceBrokerClient.clearSurfaces();
                                 Log.i(TAG, "capture session kept physical: OmniLive broker not ready");
                                 return chain.proceed();
+                            }
+                            if (!brokerReady) {
+                                Log.i(
+                                    TAG,
+                                    "continuing prepared redirect while broker is temporarily unavailable"
+                                );
                             }
 
                             Object[] redirected = TargetSurfaceRedirector.redirectSessionArgs(args);
                             if (redirected == null) {
                                 TargetSurfaceRedirector.reset();
+                                TargetSurfaceRedirector.markPhysicalSession();
                                 RootLabSurfaceBrokerClient.clearSurfaces();
                                 Log.i(TAG, "capture session kept physical: unsupported or unsafe output shape");
                                 return chain.proceed();
                             }
 
+                            TargetSurfaceRedirector.markRedirectedSession();
                             RootLabSurfaceBrokerClient.publishSurfaces(outputs);
                             Log.i(
                                 TAG,

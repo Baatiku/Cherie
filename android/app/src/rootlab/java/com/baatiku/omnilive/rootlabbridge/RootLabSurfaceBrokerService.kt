@@ -28,10 +28,20 @@ class RootLabSurfaceBrokerService:Service() {
         const val MSG_CLEAR_SURFACES=2
         const val MSG_QUERY_STATE=3
         const val MSG_STATE=4
+        const val MSG_TARGET_STATE=5
         const val KEY_SURFACES="surfaces"
         const val KEY_READY="ready"
         const val KEY_EGL_READY="egl_ready"
         const val KEY_STREAM_READY="stream_ready"
+        const val KEY_MANAGER_HOOKS="manager_hooks"
+        const val KEY_SESSION_HOOKS="session_hooks"
+        const val KEY_CLOSE_HOOKS="close_hooks"
+        const val KEY_OPEN_REQUESTS="open_requests"
+        const val KEY_SESSION_REQUESTS="session_requests"
+        const val KEY_CLOSE_EVENTS="close_events"
+        const val KEY_LAST_CAMERA_ID="last_camera_id"
+        const val KEY_LAST_SURFACE_COUNT="last_surface_count"
+        const val KEY_LAST_HOOK_ERROR="last_hook_error"
         private const val TAG="OmniLiveRootBroker"
     }
 
@@ -51,7 +61,10 @@ class RootLabSurfaceBrokerService:Service() {
             Log.w(TAG,"rejected message from uid="+message.sendingUid)
             return@Handler true
         }
-        message.replyTo?.let { client=it }
+        message.replyTo?.let {
+            client=it
+            RootLabBrokerDiagnostics.updateTargetConnected(true)
+        }
         when(message.what) {
             MSG_SET_SURFACES -> {
                 replaceSurfaces(readSurfaces(message.data))
@@ -64,6 +77,10 @@ class RootLabSurfaceBrokerService:Service() {
             }
             MSG_QUERY_STATE -> {
                 publishState()
+                true
+            }
+            MSG_TARGET_STATE -> {
+                updateTargetState(message.data)
                 true
             }
             else -> false
@@ -95,6 +112,7 @@ class RootLabSurfaceBrokerService:Service() {
     }
 
     override fun onUnbind(intent:Intent?):Boolean {
+        RootLabBrokerDiagnostics.updateTargetConnected(false)
         clearSurfaces()
         return false
     }
@@ -103,6 +121,7 @@ class RootLabSurfaceBrokerService:Service() {
         SharedEglContextRegistry.removeListener(eglListener)
         ReturnedVideoBus.removeConsumer(streamListener)
         client=null
+        RootLabBrokerDiagnostics.updateTargetConnected(false)
         clearSurfaces()
         Log.i(TAG,"surface broker destroyed")
         super.onDestroy()
@@ -113,6 +132,7 @@ class RootLabSurfaceBrokerService:Service() {
         val eglReady=SharedEglContextRegistry.current!=null
         val streamReady=ReturnedVideoBus.isStreamAvailable
         val ready=eglReady && streamReady
+        RootLabBrokerDiagnostics.updateBrokerState(ready,eglReady,streamReady)
         try {
             val message=Message.obtain(null,MSG_STATE)
             message.data=Bundle().apply {
@@ -125,7 +145,23 @@ class RootLabSurfaceBrokerService:Service() {
         } catch(t:Throwable) {
             Log.w(TAG,"failed to publish broker state",t)
             client=null
+            RootLabBrokerDiagnostics.updateTargetConnected(false)
         }
+    }
+
+    private fun updateTargetState(bundle:Bundle?) {
+        if(bundle==null) return
+        RootLabBrokerDiagnostics.updateTargetState(
+            manager=bundle.getInt(KEY_MANAGER_HOOKS,0),
+            session=bundle.getInt(KEY_SESSION_HOOKS,0),
+            close=bundle.getInt(KEY_CLOSE_HOOKS,0),
+            opens=bundle.getInt(KEY_OPEN_REQUESTS,0),
+            sessions=bundle.getInt(KEY_SESSION_REQUESTS,0),
+            closes=bundle.getInt(KEY_CLOSE_EVENTS,0),
+            cameraId=bundle.getString(KEY_LAST_CAMERA_ID),
+            surfaceCount=bundle.getInt(KEY_LAST_SURFACE_COUNT,0),
+            hookError=bundle.getString(KEY_LAST_HOOK_ERROR)
+        )
     }
 
     private fun isAllowedSender(uid:Int):Boolean {
@@ -149,6 +185,7 @@ class RootLabSurfaceBrokerService:Service() {
         detachOutputs()
         releaseSurfaces()
         surfaces.addAll(next)
+        RootLabBrokerDiagnostics.updateSurfaceState(surfaces.size,0)
         Log.i(TAG,"received "+surfaces.size+" target surface(s)")
         SharedEglContextRegistry.current?.let { attachPending(it) }
             ?: Log.i(TAG,"waiting for WebRTC EGL context before attach")
@@ -164,6 +201,7 @@ class RootLabSurfaceBrokerService:Service() {
             val firstPresentation=AtomicBoolean(false)
             val output=SurfaceFrameOutput(context) { swapTimeNs ->
                 if(firstPresentation.compareAndSet(false,true)) {
+                    RootLabBrokerDiagnostics.recordFramePresented()
                     Log.i(
                         TAG,
                         "presented returned frame index="+index+
@@ -181,6 +219,7 @@ class RootLabSurfaceBrokerService:Service() {
                 Log.w(TAG,"target surface attach failed index="+index+": "+(t.message ?: t.javaClass.simpleName))
             }
         }
+        RootLabBrokerDiagnostics.updateSurfaceState(surfaces.size,attached)
         Log.i(TAG,"surface attach summary attached="+attached+" requested="+surfaces.size)
     }
 

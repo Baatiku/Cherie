@@ -172,7 +172,7 @@ async def live_socket(websocket: WebSocket):
             }
         )
 
-        while int(time.time()) < session.expires_at:
+        while True:
             try:
                 message = await asyncio.wait_for(websocket.receive_json(), timeout=2.0)
             except asyncio.TimeoutError:
@@ -184,11 +184,17 @@ async def live_socket(websocket: WebSocket):
                 break
             if action == "ping":
                 await websocket.send_json({"event": "pong", "telemetry": telemetry_payload()})
-            else:
-                await websocket.send_json({"event": "error", "detail": "unsupported live action"})
-
-        if int(time.time()) >= session.expires_at:
-            await websocket.send_json({"event": "expired"})
+                continue
+            if action == "profile":
+                try:
+                    profile = QualityProfile(message.get("profile"))
+                except (TypeError, ValueError):
+                    await websocket.send_json({"event": "error", "detail": "invalid quality profile"})
+                    continue
+                if registry.update_profile(session.session_id, profile):
+                    await websocket.send_json({"event": "profile", "profile": profile.value})
+                continue
+            await websocket.send_json({"event": "error", "detail": "unsupported live action"})
     except WebSocketDisconnect:
         pass
     except Exception:

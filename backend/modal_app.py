@@ -29,6 +29,7 @@ app=modal.App("omnilive")
     scaledown_window=300,
     timeout=3600,
 )
+@modal.concurrent(max_inputs=1)
 @modal.asgi_app()
 def api():
     from omnilive.model_runtime import runtime

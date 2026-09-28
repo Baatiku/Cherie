@@ -241,8 +241,9 @@ class WebRtcClient(
                                 applyBackendTelemetry(SessionApi.parseTelemetry(it))
                             }
                         }
-                        "expired" -> {
-                            fail("Live session expired")
+                        "profile" -> {
+                            val confirmed=json.optString("profile",activeProfileName)
+                            LiveTelemetry.update { it.copy(activeProfile=confirmed) }
                         }
                         "error" -> {
                             fail(json.optString("detail","Live signalling failed"))
@@ -344,6 +345,9 @@ class WebRtcClient(
                     activeProfileName=next
                     val p=QualityProfile.fromName(next)
                     capturer?.changeCaptureFormat(p.width,p.height,p.cameraFps)
+                    try {
+                        liveSocket?.send(JSONObject().put("action","profile").put("profile",next).toString())
+                    } catch(_:Throwable) {}
                     LiveTelemetry.update { it.copy(activeProfile=next,packetLoss=loss) }
                 } else LiveTelemetry.update { it.copy(packetLoss=loss) }
             }

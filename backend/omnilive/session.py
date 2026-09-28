@@ -59,4 +59,12 @@ class SessionRegistry:
                 return None
             return state
 
+    def update_profile(self,session_id:str,profile:QualityProfile)->bool:
+        with self._lock:
+            state=self._items.get(session_id)
+            if state is None:
+                return False
+            state.profile=profile
+            return True
+
 registry=SessionRegistry()

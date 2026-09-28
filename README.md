@@ -9,7 +9,7 @@ This repository replaces the former placeholder project in this repo. The previo
 1. The companion activity captures the physical front camera.
 2. Standard WebRTC sends video to a Modal L4 worker.
 3. The worker applies a pluggable face-swap transform and returns video.
-4. Android re-encodes the returned frames as a low-latency local H.264 stream.
+4. Android re-encodes the returned frames as a low-latency UID-authenticated Android local H.264 stream.
 5. A libxposed/LSPosed module loaded inside the official Zoom app intercepts Camera2.
 6. Zoom still believes it is using the normal camera, but its camera Surface receives the processed stream.
 
@@ -57,7 +57,7 @@ Paste the resulting HTTPS endpoint and API token into the Android app.
 
 1. Start OmniCam Live and select a permitted/synthetic identity image.
 2. Tap Start live camera.
-3. Wait until the app reports WebRTC connected and local H.264 relay active.
+3. Wait until the app reports WebRTC connected and UID-authenticated local H.264 relay active.
 4. Enable the module in LSPosed for Zoom and force-stop Zoom once.
 5. Open the normal Zoom app and enter a meeting.
 6. Turn on the Zoom camera.

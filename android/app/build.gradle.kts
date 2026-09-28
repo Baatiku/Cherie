@@ -49,6 +49,7 @@ android {
         if(rootLabEnabled) {
             getByName("main").java.srcDir("src/rootlab/java")
             getByName("main").resources.srcDir("src/rootlab/resources")
+            getByName("main").manifest.srcFile("src/rootlab/AndroidManifest.xml")
         }
     }
 }

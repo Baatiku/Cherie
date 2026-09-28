@@ -109,15 +109,16 @@ The rooted lab phase remains isolated from transport/model code. The generic out
 - [x] Java/Kotlin JVM targets aligned to Java 17 in app and rootlab modules
 - [x] JUnit configured for app and rootlab unit tests
 - [x] Android device preflight shows app/build/device/API/camera/rootlab state and can copy diagnostics
-- [x] Android backend preflight calls `/health` before attempting a live session
+- [x] Android transport preflight validates `/health`, ICE/TURN, disposable session authentication, live WebSocket upgrade/probe and session disposal before device testing
 - [x] debug-only cleartext traffic support retained for local HTTP development endpoints
 - [x] release/default backend URL is build-configurable with `OMNILIVE_DEFAULT_BACKEND_URL`
 - [x] latest Render build passed `:app:testDebugUnitTest :rootlab:testDebugUnitTest :app:assembleDebug`
-- [x] latest install-test APK generated from application source commit `9688e1edbee7ec086dac4e055713b3044f5d7b20`
+- [x] latest install-test APKs generated from application source commit `1b97d2522ed179f2d3c8d7496238d5b92d7d56c0`
 - [x] thermal-aware adaptive controller caps moderate heat at balanced and severe-or-worse at low_latency, then requires a healthy recovery window before upgrading
 - [x] copied live diagnostics include connection/ICE/network/frame/backend/bitrate/device/reference/error state plus the active thermal quality cap
-- [x] latest APK SHA-256: `963e92760ae1d74fcbce67e86c67ef841a46e4da2eb32dd183b12171c8b29a03`
-- [x] backend CI passed 49 tests on application source commit `9688e1edbee7ec086dac4e055713b3044f5d7b20` (one upstream Starlette/TestClient deprecation warning remains)
+- [x] latest normal APK SHA-256: `fb43f7d144730a950ecf720dde09fee182db4b1787d9ddf8b7d4b4007f1ddfa7`
+- [x] latest rootlab APK SHA-256: `f608dd11c74e19a311cffffdb50f2cffb029b5ce46a848741c7e96799ac4933d`
+- [x] backend CI passed 51 tests on application source commit `1b97d2522ed179f2d3c8d7496238d5b92d7d56c0` (one upstream Starlette/TestClient deprecation warning remains)
 - [x] zero-cost CPU staging backend is live at `https://omnilive-backend-staging.onrender.com` for install/session/WebRTC transport testing; it is not the production Modal GPU backend
 
 ## Current external gates

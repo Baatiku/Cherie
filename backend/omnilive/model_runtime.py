@@ -1,5 +1,4 @@
 from __future__ import annotations
-import os
 from pathlib import Path
 from threading import Lock
 import numpy as np
@@ -12,6 +11,7 @@ class OnnxRuntime:
         self._session=None
         self._model_path=None
         self._providers=[]
+        self._last_error=None
 
     @property
     def loaded(self)->bool:
@@ -20,6 +20,14 @@ class OnnxRuntime:
     @property
     def providers(self)->list[str]:
         return list(self._providers)
+
+    @property
+    def model_path(self)->str|None:
+        return str(self._model_path) if self._model_path else None
+
+    @property
+    def last_error(self)->str|None:
+        return self._last_error
 
     def _resolve_path(self)->Path|None:
         model_id=(settings.model_id or "").strip()
@@ -37,31 +45,49 @@ class OnnxRuntime:
         if candidate.suffix.lower()!=".onnx":
             candidate=candidate.with_suffix(".onnx")
         if not candidate.exists():
-            return None
+            raise FileNotFoundError("configured model not found: "+str(candidate))
         return candidate
 
-    def load(self):
-        path=self._resolve_path()
-        if path is None:
-            return None
-        with self._lock:
-            if self._session is not None and self._model_path==path:
+    def load(self,strict:bool=False):
+        try:
+            path=self._resolve_path()
+            if path is None:
+                return None
+            with self._lock:
+                if self._session is not None and self._model_path==path:
+                    return self._session
+                import onnxruntime as ort
+                available=ort.get_available_providers()
+                preferred=[
+                    p for p in ("TensorrtExecutionProvider","CUDAExecutionProvider","CPUExecutionProvider")
+                    if p in available
+                ]
+                if not preferred:
+                    preferred=["CPUExecutionProvider"]
+                self._session=ort.InferenceSession(str(path),providers=preferred)
+                self._model_path=path
+                self._providers=list(self._session.get_providers())
+                self._last_error=None
                 return self._session
-            import onnxruntime as ort
-            available=ort.get_available_providers()
-            preferred=[
-                p for p in ("TensorrtExecutionProvider","CUDAExecutionProvider","CPUExecutionProvider")
-                if p in available
-            ]
-            if not preferred:
-                preferred=["CPUExecutionProvider"]
-            self._session=ort.InferenceSession(str(path),providers=preferred)
-            self._model_path=path
-            self._providers=list(self._session.get_providers())
-            return self._session
+        except Exception as exc:
+            self._last_error=str(exc)
+            if strict:
+                raise
+            return None
+
+    def status(self)->dict:
+        configured=(settings.model_id or "none")!="none"
+        return {
+            "configured":configured,
+            "model_id":settings.model_id,
+            "loaded":self.loaded,
+            "model_path":self.model_path,
+            "providers":self.providers,
+            "last_error":self.last_error,
+        }
 
     def run_image(self,rgb:np.ndarray)->np.ndarray:
-        session=self.load()
+        session=self.load(strict=True)
         if session is None:
             return rgb
         input_meta=session.get_inputs()[0]
@@ -90,6 +116,8 @@ class OnnxRuntime:
         if nchw and y.ndim==3 and y.shape[0] in (1,3,4):
             y=np.transpose(y,(1,2,0))
         y=np.clip(y,0.0,1.0)
+        if y.ndim==2:
+            y=y[...,None]
         if y.shape[-1]==1:
             y=np.repeat(y,3,axis=-1)
         y=(y[...,:3]*255.0).astype(np.uint8)

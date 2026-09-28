@@ -31,5 +31,7 @@ app=modal.App("omnilive")
 )
 @modal.asgi_app()
 def api():
+    from omnilive.model_runtime import runtime
+    runtime.load(strict=False)
     from omnilive.app import app as fastapi_app
     return fastapi_app

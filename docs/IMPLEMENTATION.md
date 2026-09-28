@@ -26,11 +26,14 @@
 - [x] Modal Volume mounted at /models
 - [x] ONNX Runtime GPU dependency
 - [x] TensorRT/CUDA/CPU provider selection
-- [x] lazy model loading/cache
+- [x] lazy model cache
+- [x] model preload at Modal container startup
 - [x] generic NCHW/NHWC image-to-image adapter
-- [x] built-in original/soft-focus/monochrome/pixelate effects
+- [x] built-in effects
 - [x] per-session effect selection
 - [x] Android effect controls
+- [x] model diagnostics endpoint
+- [x] synthetic processor benchmark endpoint
 - [ ] detector + landmark tracker
 - [ ] temporal crop tracking
 - [ ] masks/color correction/enhancement

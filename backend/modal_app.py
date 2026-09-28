@@ -349,7 +349,41 @@ class GpuPeer:
             answer,
         )
 
-        worker = PipelineWorker(pipeline)
+        # Pipecat defaults target voice agents. This pipeline is video-only,
+        # so disable speech-idle cancellation, RTVI and TURN tracking.
+        worker = PipelineWorker(
+            pipeline,
+            idle_timeout_secs=None,
+            enable_rtvi=False,
+            enable_turn_tracking=False,
+        )
+
+        async def end_session(reason: str):
+            print(
+                f"OmniCam connection {connection.pc_id}: {reason}"
+            )
+            await worker.cancel()
+
+        @transport.event_handler("on_client_connected")
+        async def on_client_connected(transport, client):
+            print(
+                f"OmniCam connection {connection.pc_id}: client connected"
+            )
+            # Pipecat requires explicit capture of the incoming camera track.
+            await transport.capture_participant_video("camera")
+
+        @transport.event_handler("on_client_disconnected")
+        async def on_client_disconnected(transport, client):
+            await end_session("client disconnected")
+
+        @connection.event_handler("failed")
+        async def on_failed(connection):
+            await end_session("connection failed")
+
+        @connection.event_handler("closed")
+        async def on_closed(connection):
+            await end_session("connection closed")
+
         runner = WorkerRunner(
             handle_sigint=False
         )

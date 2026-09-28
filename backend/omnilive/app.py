@@ -1,4 +1,5 @@
 import asyncio
+import os
 from contextlib import asynccontextmanager
 import time
 import uuid
@@ -419,7 +420,14 @@ def prometheus_payload() -> str:
 def health():
     payload = telemetry_payload()
     ok, state = _health_state(payload)
-    return {"ok": ok, "status": state, "service": "omnilive", "time": int(time.time()), **payload}
+    return {
+        "ok": ok,
+        "status": state,
+        "service": "omnilive",
+        "time": int(time.time()),
+        "build_sha": os.getenv("RENDER_GIT_COMMIT") or os.getenv("OMNILIVE_BUILD_SHA") or "unknown",
+        **payload,
+    }
 
 
 @app.get("/metrics")

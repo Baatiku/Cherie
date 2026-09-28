@@ -95,7 +95,7 @@ class CompatibilityRecoveryCoordinator(
         if(closed || !controller.targetForeground || !controller.outputAvailable) return controller.state
         if(adapter.bindProcessedOutput()) {
             rebindAttempts=0
-            return controller.state
+            return controller.onOutputAvailabilityChanged(true)
         }
         return recover("processed camera output bind failed")
     }
@@ -125,7 +125,7 @@ class CompatibilityRecoveryCoordinator(
                 }
                 if(adapter.bindProcessedOutput()) {
                     rebindAttempts=0
-                    controller.onTargetCameraChanged(true)
+                    controller.onOutputAvailabilityChanged(true)
                 } else {
                     recover("processed camera output rebind failed")
                 }

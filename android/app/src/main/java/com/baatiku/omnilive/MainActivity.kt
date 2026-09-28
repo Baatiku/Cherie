@@ -140,6 +140,12 @@ class MainActivity:ComponentActivity() {
                                 (telemetry.framesEncoded?.toString() ?: "—")+"/"+(telemetry.framesSent?.toString() ?: "—")
                         )
                         Text(
+                            "Device: battery "+(telemetry.batteryPercent?.let { "$it%" } ?: "—")+
+                                " · "+when(telemetry.batteryCharging) { true -> "charging"; false -> "battery"; null -> "—" }+
+                                " · "+(telemetry.batteryTemperatureC?.let { String.format(Locale.US,"%.1f°C",it) } ?: "—")+
+                                " · thermal "+telemetry.thermalStatus
+                        )
+                        Text(
                             "Backend p95: "+(telemetry.backendProcessorP95Ms?.toString() ?: "—")+" ms · Model: "+
                                 (telemetry.backendModelP95Ms?.toString() ?: "—")+" ms"
                         )

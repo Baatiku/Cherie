@@ -8,9 +8,11 @@ import com.baatiku.omnilive.BuildConfig
 class LiveStreamService:Service() {
     companion object { const val CHANNEL_ID="omnilive_stream"; const val NOTIFICATION_ID=1001 }
     private var client:WebRtcClient?=null
+    private var deviceHealth:DeviceHealthMonitor?=null
 
     override fun onCreate() {
         super.onCreate()
+        deviceHealth=DeviceHealthMonitor(this).also { it.start() }
         getSystemService(NotificationManager::class.java).createNotificationChannel(
             NotificationChannel(CHANNEL_ID,"OmniLive session",NotificationManager.IMPORTANCE_LOW)
         )
@@ -37,6 +39,8 @@ class LiveStreamService:Service() {
     override fun onDestroy() {
         client?.stop()
         client=null
+        deviceHealth?.stop()
+        deviceHealth=null
         super.onDestroy()
     }
     override fun onBind(intent:Intent?):IBinder?=null

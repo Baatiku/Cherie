@@ -38,6 +38,10 @@ data class LiveTelemetryState(
     val encoderFps:Double?=null,
     val framesEncoded:Long?=null,
     val framesSent:Long?=null,
+    val batteryPercent:Int?=null,
+    val batteryCharging:Boolean?=null,
+    val batteryTemperatureC:Double?=null,
+    val thermalStatus:String="unknown",
     val lastError:String?=null
 )
 

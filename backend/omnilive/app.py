@@ -1,4 +1,5 @@
 import asyncio
+from contextlib import asynccontextmanager
 import time
 import uuid
 
@@ -51,7 +52,15 @@ from .telemetry import (
 )
 from .webrtc import FrameTimingBridge, accept_offer, close_all_peers, close_peer
 
-app = FastAPI(title="OmniLive", version="0.10.0")
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    try:
+        yield
+    finally:
+        await close_all_peers()
+
+
+app = FastAPI(title="OmniLive", version="0.10.0", lifespan=lifespan)
 
 
 class BenchmarkRequest(BaseModel):
@@ -697,7 +706,3 @@ def frame_decision(body: FrameMeta, authorization: str | None = Header(default=N
         state.last_sequence = body.sequence
     return decision
 
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    await close_all_peers()

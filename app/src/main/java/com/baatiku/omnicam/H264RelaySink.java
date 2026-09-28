@@ -17,6 +17,7 @@ public final class H264RelaySink implements VideoSink, AutoCloseable {
     private MediaCodec encoder;
     private int width;
     private int height;
+    private int colorFormat;
 
     public H264RelaySink(LocalH264Server server) {
         this.server = server;
@@ -34,8 +35,19 @@ public final class H264RelaySink implements VideoSink, AutoCloseable {
                 if (in != null) {
                     in.clear();
                     packPlane(i420.getDataY(), i420.getStrideY(), width, height, in);
-                    packPlane(i420.getDataU(), i420.getStrideU(), width / 2, height / 2, in);
-                    packPlane(i420.getDataV(), i420.getStrideV(), width / 2, height / 2, in);
+                    if (colorFormat == MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar) {
+                        packUvSemiPlanar(
+                                i420.getDataU(),
+                                i420.getStrideU(),
+                                i420.getDataV(),
+                                i420.getStrideV(),
+                                width / 2,
+                                height / 2,
+                                in);
+                    } else {
+                        packPlane(i420.getDataU(), i420.getStrideU(), width / 2, height / 2, in);
+                        packPlane(i420.getDataV(), i420.getStrideV(), width / 2, height / 2, in);
+                    }
                     encoder.queueInputBuffer(
                             index,
                             0,
@@ -56,16 +68,18 @@ public final class H264RelaySink implements VideoSink, AutoCloseable {
         width = inputWidth & ~1;
         height = inputHeight & ~1;
 
+        encoder = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC);
+        MediaCodecInfo.CodecCapabilities caps = encoder.getCodecInfo()
+                .getCapabilitiesForType(MediaFormat.MIMETYPE_VIDEO_AVC);
+        colorFormat = chooseColorFormat(caps.colorFormats);
+
         MediaFormat f = MediaFormat.createVideoFormat(
                 MediaFormat.MIMETYPE_VIDEO_AVC, width, height);
-        f.setInteger(
-                MediaFormat.KEY_COLOR_FORMAT,
-                MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible);
+        f.setInteger(MediaFormat.KEY_COLOR_FORMAT, colorFormat);
         f.setInteger(MediaFormat.KEY_BIT_RATE, 2_000_000);
         f.setInteger(MediaFormat.KEY_FRAME_RATE, 30);
         f.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1);
 
-        encoder = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC);
         encoder.configure(f, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
         encoder.start();
 
@@ -82,6 +96,43 @@ public final class H264RelaySink implements VideoSink, AutoCloseable {
             dup.limit(start + w);
             dst.put(dup);
             dup.clear();
+        }
+    }
+
+    private static int chooseColorFormat(int[] formats) {
+        boolean flexible = false;
+        for (int format : formats) {
+            if (format == MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar) {
+                return format;
+            }
+            if (format == MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar) {
+                return format;
+            }
+            if (format == MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible) {
+                flexible = true;
+            }
+        }
+        if (flexible) {
+            return MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible;
+        }
+        throw new IllegalStateException("No supported YUV420 AVC encoder input format");
+    }
+
+    private static void packUvSemiPlanar(
+            ByteBuffer u,
+            int uStride,
+            ByteBuffer v,
+            int vStride,
+            int w,
+            int h,
+            ByteBuffer dst) {
+        ByteBuffer ub = u.duplicate();
+        ByteBuffer vb = v.duplicate();
+        for (int row = 0; row < h; row++) {
+            for (int col = 0; col < w; col++) {
+                dst.put(ub.get(row * uStride + col));
+                dst.put(vb.get(row * vStride + col));
+            }
         }
     }
 

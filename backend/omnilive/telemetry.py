@@ -99,5 +99,6 @@ frame_correlation_match_counter = Counter()
 frame_correlation_drop_counter = Counter()
 frame_correlation_out_of_order_counter = Counter()
 frame_timing_publish_drop_counter = Counter()
+model_recovery_skip_counter = Counter()
 
 pipeline_health = PipelineHealth()

@@ -111,10 +111,12 @@ The rooted lab phase remains isolated from transport/model code. The generic out
 - [x] debug-only cleartext traffic support retained for local HTTP development endpoints
 - [x] release/default backend URL is build-configurable with `OMNILIVE_DEFAULT_BACKEND_URL`
 - [x] latest Render build passed `:app:testDebugUnitTest :rootlab:testDebugUnitTest :app:assembleDebug`
-- [x] latest install-test APK generated from source commit `975351f7f1c4424c37539b066a637c7f94c0c1cc`
+- [x] latest install-test APK generated from application source commit `9688e1edbee7ec086dac4e055713b3044f5d7b20`
 - [x] thermal-aware adaptive controller caps moderate heat at balanced and severe-or-worse at low_latency, then requires a healthy recovery window before upgrading
-- [x] latest APK SHA-256: `68dbf6f83f291215108bad12b783c4e09f4969cd27c662b16ed0aac5611f7cd6`
-- [x] backend CI passed 49 tests on the same source commit (one upstream Starlette/TestClient deprecation warning remains)
+- [x] copied live diagnostics include connection/ICE/network/frame/backend/bitrate/device/reference/error state plus the active thermal quality cap
+- [x] latest APK SHA-256: `963e92760ae1d74fcbce67e86c67ef841a46e4da2eb32dd183b12171c8b29a03`
+- [x] backend CI passed 49 tests on application source commit `9688e1edbee7ec086dac4e055713b3044f5d7b20` (one upstream Starlette/TestClient deprecation warning remains)
+- [x] zero-cost CPU staging backend is live at `https://omnilive-backend-staging.onrender.com` for install/session/WebRTC transport testing; it is not the production Modal GPU backend
 
 ## Current external gates
 

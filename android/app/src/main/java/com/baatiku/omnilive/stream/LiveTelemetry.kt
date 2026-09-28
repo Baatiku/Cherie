@@ -26,6 +26,18 @@ data class LiveTelemetryState(
     val frameCorrelationMisses:Long=0,
     val frameCorrelationOutOfOrder:Long=0,
     val backendFrameTotalMs:Long?=null,
+    val iceLocalCandidateType:String?=null,
+    val iceRemoteCandidateType:String?=null,
+    val iceTransport:String?=null,
+    val relayUsed:Boolean?=null,
+    val bitrateTier:String?=null,
+    val targetBitrateKbps:Int?=null,
+    val sentKbps:Long?=null,
+    val receivedKbps:Long?=null,
+    val availableOutgoingKbps:Long?=null,
+    val encoderFps:Double?=null,
+    val framesEncoded:Long?=null,
+    val framesSent:Long?=null,
     val lastError:String?=null
 )
 

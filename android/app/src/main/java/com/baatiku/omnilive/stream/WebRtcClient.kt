@@ -34,6 +34,7 @@ class WebRtcClient(
     private var capturer:CameraVideoCapturer?=null
     private var localTrack:VideoTrack?=null
     private var peer:PeerConnection?=null
+    private var videoSender:RtpSender?=null
     @Volatile private var liveSocket:WebSocket?=null
     private var localDescriptionReady=false
     private var session:LiveSession?=null
@@ -47,6 +48,9 @@ class WebRtcClient(
     private var activeProfileName=initialProfileName
     private var previousLost:Long?=null
     private var previousReceived:Long?=null
+    private var previousBytesSent:Long?=null
+    private var previousBytesReceived:Long?=null
+    private var previousStatsAtMs:Long?=null
     private var currentNetwork:Network?=null
     private var hasSeenNetwork=false
     private var networkCallbackRegistered=false
@@ -198,9 +202,13 @@ class WebRtcClient(
         localDescriptionReady=false
         previousLost=null
         previousReceived=null
+        previousBytesSent=null
+        previousBytesReceived=null
+        previousStatsAtMs=null
         peer?.close()
         peer=createPeer()
-        peer!!.addTrack(localTrack!!,listOf("omnilive"))
+        videoSender=peer!!.addTrack(localTrack!!,listOf("omnilive"))
+        applySenderLimits(activeProfileName)
         peer!!.createOffer(object:SimpleSdpObserver() {
             override fun onCreateSuccess(desc:SessionDescription) {
                 peer?.setLocalDescription(object:SimpleSdpObserver(){},desc)
@@ -226,6 +234,29 @@ class WebRtcClient(
             else -> "ws://"+base
         }
         return websocketBase+"/v1/live"
+    }
+
+    private fun applySenderLimits(profileName:String) {
+        val sender=videoSender ?: return
+        val profile=QualityProfile.fromName(profileName)
+        try {
+            val parameters=sender.parameters
+            parameters.encodings.forEach { encoding ->
+                encoding.maxBitrateBps=profile.maxBitrateBps
+                encoding.maxFramerate=profile.cameraFps
+            }
+            val applied=sender.setParameters(parameters)
+            if(applied) {
+                LiveTelemetry.update {
+                    it.copy(
+                        bitrateTier=profileName,
+                        targetBitrateKbps=profile.maxBitrateBps/1000
+                    )
+                }
+            }
+        } catch(_:Throwable) {
+            // Stats remain available even if a device-specific sender rejects a runtime limit.
+        }
     }
 
     private fun applyFrameLatency(snapshot:FrameLatencySnapshot) {
@@ -380,15 +411,28 @@ class WebRtcClient(
             var packetsLost:Long?=null
             var packetsReceived:Long?=null
             var framesReceived:Long?=null
-            report.statsMap.values.forEach { stat ->
+            var bytesReceived:Long?=null
+            var bytesSent:Long?=null
+            var framesEncoded:Long?=null
+            var framesSent:Long?=null
+            var encoderFps:Double?=null
+            var availableOutgoingKbps:Long?=null
+            var localCandidateId:String?=null
+            var remoteCandidateId:String?=null
+
+            report.statsMap.forEach { (_,stat) ->
                 val members=stat.members
                 when(stat.type) {
                     "candidate-pair" -> {
                         val state=members["state"]?.toString()
                         val nominated=members["nominated"] as? Boolean ?: false
                         if(state=="succeeded" && nominated) {
+                            localCandidateId=members["localCandidateId"]?.toString()
+                            remoteCandidateId=members["remoteCandidateId"]?.toString()
                             val seconds=members["currentRoundTripTime"] as? Number
                             if(seconds!=null) rttMs=(seconds.toDouble()*1000.0).toLong()
+                            availableOutgoingKbps=(members["availableOutgoingBitrate"] as? Number)
+                                ?.toDouble()?.div(1000.0)?.toLong()
                         }
                     }
                     "inbound-rtp" -> {
@@ -397,18 +441,70 @@ class WebRtcClient(
                             packetsLost=(members["packetsLost"] as? Number)?.toLong()
                             packetsReceived=(members["packetsReceived"] as? Number)?.toLong()
                             framesReceived=(members["framesReceived"] as? Number)?.toLong()
+                            bytesReceived=(members["bytesReceived"] as? Number)?.toLong()
+                        }
+                    }
+                    "outbound-rtp" -> {
+                        val kind=members["kind"]?.toString() ?: members["mediaType"]?.toString()
+                        if(kind=="video") {
+                            bytesSent=(members["bytesSent"] as? Number)?.toLong()
+                            framesEncoded=(members["framesEncoded"] as? Number)?.toLong()
+                            framesSent=(members["framesSent"] as? Number)?.toLong()
+                            encoderFps=(members["framesPerSecond"] as? Number)?.toDouble()
                         }
                     }
                 }
             }
-            LiveTelemetry.update {
-                it.copy(rttMs=rttMs ?: it.rttMs,packetsLost=packetsLost ?: it.packetsLost,framesReceived=framesReceived ?: it.framesReceived)
+
+            val localCandidate=localCandidateId?.let { report.statsMap[it] }
+            val remoteCandidate=remoteCandidateId?.let { report.statsMap[it] }
+            val localType=localCandidate?.members?.get("candidateType")?.toString()
+            val remoteType=remoteCandidate?.members?.get("candidateType")?.toString()
+            val transport=localCandidate?.members?.get("protocol")?.toString()
+                ?: remoteCandidate?.members?.get("protocol")?.toString()
+            val relayUsed=if(localType!=null || remoteType!=null) {
+                localType=="relay" || remoteType=="relay"
+            } else null
+
+            val nowMs=SystemClock.elapsedRealtime()
+            val oldStatsAt=previousStatsAtMs
+            val oldSent=previousBytesSent
+            val oldBytesReceived=previousBytesReceived
+            var sentKbps:Long?=null
+            var receivedKbps:Long?=null
+            if(oldStatsAt!=null && nowMs>oldStatsAt) {
+                val elapsedMs=nowMs-oldStatsAt
+                if(bytesSent!=null && oldSent!=null) {
+                    sentKbps=(max(0,bytesSent!!-oldSent)*8L)/elapsedMs
+                }
+                if(bytesReceived!=null && oldBytesReceived!=null) {
+                    receivedKbps=(max(0,bytesReceived!!-oldBytesReceived)*8L)/elapsedMs
+                }
             }
+
+            LiveTelemetry.update {
+                it.copy(
+                    rttMs=rttMs ?: it.rttMs,
+                    packetsLost=packetsLost ?: it.packetsLost,
+                    framesReceived=framesReceived ?: it.framesReceived,
+                    iceLocalCandidateType=localType ?: it.iceLocalCandidateType,
+                    iceRemoteCandidateType=remoteType ?: it.iceRemoteCandidateType,
+                    iceTransport=transport ?: it.iceTransport,
+                    relayUsed=relayUsed ?: it.relayUsed,
+                    sentKbps=sentKbps ?: it.sentKbps,
+                    receivedKbps=receivedKbps ?: it.receivedKbps,
+                    availableOutgoingKbps=availableOutgoingKbps ?: it.availableOutgoingKbps,
+                    encoderFps=encoderFps ?: it.encoderFps,
+                    framesEncoded=framesEncoded ?: it.framesEncoded,
+                    framesSent=framesSent ?: it.framesSent
+                )
+            }
+
             val oldLost=previousLost
             val oldReceived=previousReceived
             if(rttMs!=null && packetsLost!=null && packetsReceived!=null && oldLost!=null && oldReceived!=null) {
-                val lostDelta=max(0,packetsLost-oldLost)
-                val receivedDelta=max(0,packetsReceived-oldReceived)
+                val lostDelta=max(0,packetsLost!!-oldLost)
+                val receivedDelta=max(0,packetsReceived!!-oldReceived)
                 val total=lostDelta+receivedDelta
                 val loss=if(total>0) lostDelta.toDouble()/total.toDouble() else 0.0
                 val next=quality.update(rttMs!!,loss,backendP95Ms)
@@ -416,6 +512,7 @@ class WebRtcClient(
                     activeProfileName=next
                     val p=QualityProfile.fromName(next)
                     capturer?.changeCaptureFormat(p.width,p.height,p.cameraFps)
+                    applySenderLimits(next)
                     try {
                         liveSocket?.send(JSONObject().put("action","profile").put("profile",next).toString())
                     } catch(_:Throwable) {}
@@ -424,6 +521,9 @@ class WebRtcClient(
             }
             previousLost=packetsLost
             previousReceived=packetsReceived
+            previousBytesSent=bytesSent
+            previousBytesReceived=bytesReceived
+            previousStatsAtMs=nowMs
         }
     }
 
@@ -480,6 +580,7 @@ class WebRtcClient(
         capturer=null
         peer?.close()
         peer=null
+        videoSender=null
         if(::factory.isInitialized) factory.dispose()
         httpClient.connectionPool.evictAll()
         httpClient.dispatcher.executorService.shutdown()

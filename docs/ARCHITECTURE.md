@@ -1,34 +1,38 @@
-# Architecture
+# OmniLive architecture
 
-Physical camera -> Android WebRTC -> Modal GPU -> Android remote VideoTrack -> MediaCodec H.264 -> an Android abstract local socket -> LSPosed decoder inside Zoom -> Zoom Camera2 Surface.
+## Live path
 
-The microphone is not proxied. Zoom continues to own its normal microphone path.
+```
+Android Camera2
+  -> MediaCodec H.264
+  -> realtime transport
+  -> session-affine Modal worker
+  -> decoder
+  -> face detection (periodic)
+  -> tracking (every frame)
+  -> face processor
+  -> GPU composite
+  -> encoder
+  -> realtime transport
+  -> Android MediaCodec decoder
+  -> local output Surface
+```
 
-## Local bridge
+## Latency strategy
 
-Loading another WebRTC stack inside Zoom risks native-library collisions. The companion process owns cloud WebRTC. The hooked Zoom process only contains a local-socket client and Android MediaCodec decoder.
+- one warm worker per active session during benchmarking
+- sticky session affinity
+- drop stale frames instead of buffering
+- process face crop, not full frame
+- detector cadence lower than render cadence
+- reuse tracker state
+- hardware encode/decode
+- adaptive resolution and fps
 
-Protocol:
-- greeting: ASCII OMNI1, int32 width, int32 height
-- packet: uint8 type, int64 ptsUs, int32 byteLength, payload
-- type 0 = AVC codec configuration
-- type 1 = encoded frame
+Target added latency is <250 ms, with a stretch goal below 180 ms on a good network.
 
-The relay binds only to 127.0.0.1.
+## Session model
 
-## Camera2 virtualization
+Each session has a random id, short-lived bearer token, quality profile, expiry, worker-affinity key, latency telemetry, and monotonic frame sequence numbers.
 
-The module hooks framework CameraDeviceImpl capture-session creation and CaptureRequest.Builder addTarget/removeTarget.
-
-For every output Surface:
-- preserve the original for virtual video;
-- create a dummy SurfaceTexture/Surface for the real camera session;
-- replace the session output with the dummy;
-- when Zoom later calls addTarget(original), substitute dummy;
-- decode the localhost H.264 stream to the original Surface.
-
-All hooks run in libxposed PROTECTIVE mode. Unsupported signatures fall through.
-
-## Modal
-
-The server uses HTTP signaling plus a long-lived GPU WebRTC peer. The first processor is an InsightFace-compatible ONNX swapper. Missing swap weights intentionally produce passthrough video for transport testing.
+The backend stores no video frames.

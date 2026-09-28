@@ -57,7 +57,7 @@ mkdir -p "${OUT_DIR}"
 } > "${REPORT}"
 
 echo "==> Installing ${APK}"
-"${ADB[@]}" install -r -t "${APK}" | tee -a "${REPORT"
+"${ADB[@]}" install -r -t "${APK}" | tee -a "${REPORT}"
 
 echo "==> Granting CAMERA"
 "${ADB[@]}" shell pm grant "${PACKAGE}" android.permission.CAMERA || true

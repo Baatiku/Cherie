@@ -230,3 +230,48 @@ Rooted-lab APK:
 https://omnilive-apk-builder.onrender.com/omnilive-rootlab-debug.apk
 SHA-256 f608dd11c74e19a311cffffdb50f2cffb029b5ce46a848741c7e96799ac4933d
 ```
+
+
+## Zoom surface-broker rootlab build
+
+Application source:
+
+```text
+c5bd80527d3ca06fe1ffe1a5c0f6e5b2f2ad9047
+```
+
+This build adds the first concrete Zoom package-specific rootlab transport:
+
+- Zoom-scoped modern libxposed Camera2 open/session/close hooks
+- target-process Messenger client for Camera2 output `Surface` objects
+- rootlab-only exported OmniLive broker service
+- sender UID validation against `us.zoom.videomeetings`
+- shared WebRTC EGL context registry
+- processed-frame `SurfaceFrameOutput` attach attempts against transferred Zoom surfaces
+- rootlab smoke-harness checks for root, broker packaging, hook logs and successful surface attachment
+
+The Xposed hook remains fail-open for this checkpoint: the physical Camera2 call still proceeds until real-device testing tells us whether Zoom/vendor buffer queues permit the processed producer attach.
+
+Verified Render tasks:
+
+```text
+:app:testDebugUnitTest
+:rootlab:testDebugUnitTest
+:app:assembleDebug
+:app:assembleDebug -Pomnilive.rootLab=true
+BUILD SUCCESSFUL
+```
+
+Normal APK:
+
+```text
+https://omnilive-apk-builder.onrender.com/omnilive-debug.apk
+SHA-256 33a7459c88c4bcbb7a11f509c829e6cb60c7fc80f0ecd2e53d7e37cdb3551be6
+```
+
+Rootlab APK:
+
+```text
+https://omnilive-apk-builder.onrender.com/omnilive-rootlab-debug.apk
+SHA-256 baa35e69b12bc0e8f5289cb80b9bd9b880fcf20028c4626e5148a7efe6f35b17
+```

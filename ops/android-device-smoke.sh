@@ -11,6 +11,10 @@ EFFECT="${OMNILIVE_EFFECT:-original}"
 START_SERVICE="${OMNILIVE_START_SERVICE:-1}"
 WAIT_SECONDS="${OMNILIVE_SMOKE_WAIT_SECONDS:-5}"
 OUT_DIR="${OMNILIVE_SMOKE_OUT_DIR:-build-artifacts}"
+ROOTLAB_MODE="${OMNILIVE_ROOTLAB_MODE:-0}"
+ROOTLAB_TARGET="${OMNILIVE_ROOTLAB_TARGET_PACKAGE:-us.zoom.videomeetings}"
+ROOTLAB_LAUNCH_TARGET="${OMNILIVE_ROOTLAB_LAUNCH_TARGET:-0}"
+ROOTLAB_REQUIRE_HOOKS="${OMNILIVE_ROOTLAB_REQUIRE_HOOKS:-0}"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 REPORT="${OUT_DIR}/device-smoke-${STAMP}.txt"
 
@@ -35,6 +39,11 @@ SERIAL="${DEVICES[0]}"
 ADB=(adb -s "${SERIAL}")
 mkdir -p "${OUT_DIR}"
 
+ROOT_AVAILABLE=0
+if "${ADB[@]}" shell 'command -v su >/dev/null 2>&1 && su -c id' 2>/dev/null | grep -q 'uid=0'; then
+  ROOT_AVAILABLE=1
+fi
+
 {
   echo "OmniLive device smoke"
   echo "utc=${STAMP}"
@@ -44,12 +53,14 @@ mkdir -p "${OUT_DIR}"
   echo "profile=${PROFILE}"
   echo "effect=${EFFECT}"
   echo "backend=${BACKEND_URL:-<not supplied>}"
+  echo "rootlab_mode=${ROOTLAB_MODE}"
+  echo "rootlab_target=${ROOTLAB_TARGET}"
   echo
   "${ADB[@]}" shell getprop ro.product.manufacturer | tr -d '\r' | sed 's/^/manufacturer=/'
   "${ADB[@]}" shell getprop ro.product.model | tr -d '\r' | sed 's/^/model=/'
   "${ADB[@]}" shell getprop ro.build.version.release | tr -d '\r' | sed 's/^/android=/'
   "${ADB[@]}" shell getprop ro.build.version.sdk | tr -d '\r' | sed 's/^/api=/'
-  if "${ADB[@]}" shell 'command -v su >/dev/null 2>&1 && su -c id' 2>/dev/null | grep -q 'uid=0'; then
+  if [[ "${ROOT_AVAILABLE}" == "1" ]]; then
     echo "root=available"
   else
     echo "root=unavailable"
@@ -61,6 +72,26 @@ echo "==> Installing ${APK}"
 
 echo "==> Granting CAMERA"
 "${ADB[@]}" shell pm grant "${PACKAGE}" android.permission.CAMERA || true
+
+if [[ "${ROOTLAB_MODE}" == "1" ]]; then
+  echo "==> Validating rootlab package prerequisites"
+  if [[ "${ROOT_AVAILABLE}" != "1" ]]; then
+    echo "FAIL: rootlab mode requested but root shell is unavailable" | tee -a "${REPORT}"
+    exit 1
+  fi
+  PACKAGE_DUMP="$("${ADB[@]}" shell dumpsys package "${PACKAGE}" 2>/dev/null || true)"
+  if ! printf '%s\n' "${PACKAGE_DUMP}" | grep -q 'RootLabSurfaceBrokerService'; then
+    echo "FAIL: rootlab broker service is not packaged in this APK" | tee -a "${REPORT}"
+    exit 1
+  fi
+  echo "rootlab_broker=packaged" >> "${REPORT}"
+
+  if "${ADB[@]}" shell pm path "${ROOTLAB_TARGET}" 2>/dev/null | grep -q '^package:'; then
+    echo "rootlab_target_installed=yes" >> "${REPORT}"
+  else
+    echo "rootlab_target_installed=no" >> "${REPORT}"
+  fi
+fi
 
 echo "==> Clearing logcat and launching activity"
 "${ADB[@]}" logcat -c
@@ -90,6 +121,11 @@ if [[ "${START_SERVICE}" == "1" ]]; then
   "${ADB[@]}" "${SERVICE_ARGS[@]}" | tee -a "${REPORT}"
 fi
 
+if [[ "${ROOTLAB_MODE}" == "1" && "${ROOTLAB_LAUNCH_TARGET}" == "1" ]]; then
+  echo "==> Launching rootlab target ${ROOTLAB_TARGET}"
+  "${ADB[@]}" shell monkey -p "${ROOTLAB_TARGET}" -c android.intent.category.LAUNCHER 1     | tee -a "${REPORT}" || true
+fi
+
 sleep "${WAIT_SECONDS}"
 
 echo "==> Checking runtime state"
@@ -98,6 +134,24 @@ echo "==> Checking runtime state"
 
 LOGS="$("${ADB[@]}" logcat -d -v threadtime)"
 printf '%s\n' "${LOGS}" | grep -E   "AndroidRuntime|FATAL EXCEPTION|SecurityException|ForegroundServiceDidNotStart|ForegroundServiceStartNotAllowed|CameraAccessException|com\.baatiku\.omnilive"   >> "${REPORT}" || true
+
+if [[ "${ROOTLAB_MODE}" == "1" ]]; then
+  printf '%s\n' "${LOGS}" | grep -E 'OmniLiveRootLab|OmniLiveRootBroker' >> "${REPORT}" || true
+  if printf '%s\n' "${LOGS}" | grep -Eq 'Zoom Camera2 hooks ready|hook inventory manager='; then
+    echo "rootlab_hooks=observed" >> "${REPORT}"
+  else
+    echo "rootlab_hooks=not_observed" >> "${REPORT}"
+    if [[ "${ROOTLAB_REQUIRE_HOOKS}" == "1" ]]; then
+      echo "FAIL: rootlab Xposed hooks were required but not observed" | tee -a "${REPORT}"
+      exit 1
+    fi
+  fi
+  if printf '%s\n' "${LOGS}" | grep -Eq 'surface attach summary attached=[1-9]'; then
+    echo "rootlab_surface_attach=observed" >> "${REPORT}"
+  else
+    echo "rootlab_surface_attach=not_observed" >> "${REPORT}"
+  fi
+fi
 
 if printf '%s\n' "${LOGS}" | grep -Eqi   'FATAL EXCEPTION|ForegroundServiceDidNotStart|ForegroundServiceStartNotAllowed|SecurityException.*(camera|foreground|com\.baatiku\.omnilive)'; then
   echo "FAIL: crash or foreground-service security failure detected" | tee -a "${REPORT}"

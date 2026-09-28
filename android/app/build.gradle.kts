@@ -1,3 +1,8 @@
+val rootLabEnabled = providers.gradleProperty("omnilive.rootLab")
+    .orNull
+    ?.equals("true",ignoreCase=true)
+    ?: false
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -15,15 +20,25 @@ android {
         versionCode = 5
         versionName = "0.5.0"
         buildConfigField("String", "DEFAULT_BACKEND_URL", "\"http://10.0.2.2:8000\"")
+        buildConfigField("boolean", "ROOT_LAB_ENABLED", rootLabEnabled.toString())
     }
 
     buildFeatures {
         compose = true
         buildConfig = true
     }
+
+    sourceSets {
+        if(rootLabEnabled) {
+            getByName("main").java.srcDir("src/rootlab/java")
+        }
+    }
 }
 
 dependencies {
+    if(rootLabEnabled) {
+        implementation(project(":rootlab"))
+    }
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.activity:activity-compose:1.10.0")
     implementation("androidx.compose.ui:ui:1.7.6")

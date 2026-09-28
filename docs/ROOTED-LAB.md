@@ -59,3 +59,30 @@ No root code should be introduced into:
 - normal Android WebRTC transport
 - model runtime
 - session handling
+
+
+## Lab-only app bridge
+
+The normal app has no dependency on `:rootlab` by default.
+
+Enable the optional lab source/dependency explicitly:
+
+```bash
+cd android
+./gradlew :app:assembleDebug -Pomnilive.rootLab=true
+```
+
+The same property sets:
+
+```text
+BuildConfig.ROOT_LAB_ENABLED=true
+```
+
+Only that build compiles `app/src/rootlab/java` and adds `project(":rootlab")` to the app.
+
+The current lab-only bridge translates:
+- `ProcessedFrameInfo` -> `LabFrameInfo`
+- processed-output availability -> the compatibility state machine
+- processed-output availability -> the lab endpoint
+
+Pixel rendering remains on `SurfaceFrameOutput`. The bridge does not intercept camera APIs or contain target-app-specific behavior.

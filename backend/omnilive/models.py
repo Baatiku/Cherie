@@ -33,6 +33,8 @@ class IceServer(BaseModel):
 
 class IceConfig(BaseModel):
     servers:list[IceServer]
+    credential_mode:str="static"
+    expires_at:int|None=None
 
 class FrameMeta(BaseModel):
     session_id:str

@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 
 from .config import settings
 from .frame_policy import decide_frame
+from .ice import current_ice_config
 from .model_runtime import runtime
 from .models import (
     CreateSessionRequest,
@@ -15,7 +16,6 @@ from .models import (
     FrameDecision,
     FrameMeta,
     IceConfig,
-    IceServer,
     QualityProfile,
     SessionResponse,
     WebRtcAnswer,
@@ -122,15 +122,7 @@ def telemetry():
 
 @app.get("/v1/ice", response_model=IceConfig)
 def ice_config():
-    return IceConfig(
-        servers=[
-            IceServer(
-                urls=list(settings.ice_urls),
-                username=settings.ice_username,
-                credential=settings.ice_credential,
-            )
-        ]
-    )
+    return current_ice_config()
 
 
 @app.post("/v1/benchmark")

@@ -69,7 +69,10 @@ public final class StreamingService extends Service {
         try {
             byte[] identity = Files.readAllBytes(new File(getFilesDir(), "identity.jpg").toPath());
 
-            relay = new LocalH264Server(7878);
+            int zoomUid = getPackageManager()
+                    .getApplicationInfo("us.zoom.videomeetings", 0)
+                    .uid;
+            relay = new LocalH264Server("omnicam-live", zoomUid);
             relay.start();
 
             PeerConnectionFactory.initialize(

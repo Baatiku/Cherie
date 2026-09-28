@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">OmniCam Live</string>
+    <string name="module_description">Rooted Android virtual camera bridge for authorized live face transformation.</string>
+</resources>

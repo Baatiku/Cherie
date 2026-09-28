@@ -130,6 +130,7 @@ class WebRtcClient(
         if(stopped.get()) return
         connectJob?.cancel()
         frameMarksEnabled=false
+        ReturnedVideoBus.setStreamAvailable(false)
         frameLatency.reset()
         closeLiveSocket("reconnect")
         LiveTelemetry.update {
@@ -558,13 +559,17 @@ class WebRtcClient(
         override fun onRenegotiationNeeded() {}
         override fun onAddTrack(receiver:RtpReceiver,mediaStreams:Array<out MediaStream>) {
             val track=receiver.track()
-            if(track is VideoTrack) track.addSink(returnedTimingSink)
+            if(track is VideoTrack) {
+                ReturnedVideoBus.setStreamAvailable(true)
+                track.addSink(returnedTimingSink)
+            }
         }
     }
 
     fun stop() {
         stopped.set(true)
         frameMarksEnabled=false
+        ReturnedVideoBus.setStreamAvailable(false)
         connectJob?.cancel()
         reconnectJob?.cancel()
         statsJob?.cancel()

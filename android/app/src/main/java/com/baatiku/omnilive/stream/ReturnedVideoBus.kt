@@ -2,25 +2,28 @@ package com.baatiku.omnilive.stream
 
 import org.webrtc.VideoFrame
 import org.webrtc.VideoSink
-import java.util.concurrent.CopyOnWriteArraySet
 
+/**
+ * Compatibility facade for returned WebRTC video.
+ *
+ * New outputs should attach through ProcessedFrameOutput / addConsumer(). The normal preview keeps
+ * using addSink() so the rooted compatibility layer never needs to enter WebRTC transport code.
+ */
 object ReturnedVideoBus : VideoSink {
-    private val sinks = CopyOnWriteArraySet<VideoSink>()
+    fun addSink(sink:VideoSink) = ProcessedFrameOutput.addVideoSink(sink)
 
-    fun addSink(sink: VideoSink) {
-        sinks.add(sink)
-    }
+    fun removeSink(sink:VideoSink) = ProcessedFrameOutput.removeVideoSink(sink)
 
-    fun removeSink(sink: VideoSink) {
-        sinks.remove(sink)
-    }
+    fun addConsumer(consumer:ProcessedFrameConsumer) = ProcessedFrameOutput.addConsumer(consumer)
 
-    override fun onFrame(frame: VideoFrame) {
-        frame.retain()
-        try {
-            sinks.forEach { it.onFrame(frame) }
-        } finally {
-            frame.release()
-        }
+    fun removeConsumer(consumer:ProcessedFrameConsumer) = ProcessedFrameOutput.removeConsumer(consumer)
+
+    fun setStreamAvailable(available:Boolean) = ProcessedFrameOutput.setStreamAvailable(available)
+
+    val isStreamAvailable:Boolean
+        get()=ProcessedFrameOutput.isStreamAvailable
+
+    override fun onFrame(frame:VideoFrame) {
+        ProcessedFrameOutput.onFrame(frame)
     }
 }

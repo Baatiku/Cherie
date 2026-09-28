@@ -31,13 +31,20 @@ https://modal.com/docs/sdk/py/latest/concurrent
 
 ## Required secrets/config
 
-Set secrets in Modal rather than committing them:
+The deployed function attaches the named Modal Secret `omnilive-runtime`. Create it before the first production deployment; `OMNILIVE_SESSION_SECRET` is required so the remote service cannot silently fall back to the development secret.
 
-```text
-OMNILIVE_SESSION_SECRET
-OMNILIVE_MODEL_ID
-OMNILIVE_ICE_URLS
+Example:
+
+```bash
+modal secret create omnilive-runtime \
+  OMNILIVE_SESSION_SECRET=<long-random-value> \
+  OMNILIVE_MODEL_ID=none \
+  OMNILIVE_ICE_URLS=stun:stun.cloudflare.com:3478
 ```
+
+Add TURN values to the same secret when the relay is ready. Update the named secret rather than committing credentials to Git.
+
+Optional values stored in `omnilive-runtime`.
 
 For static ICE credentials:
 

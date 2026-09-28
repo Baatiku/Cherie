@@ -5,6 +5,7 @@
 - [x] Android project and foreground service
 - [x] session registry and expiry
 - [x] Modal L4 ASGI service
+- [x] named Modal runtime Secret attached to the L4 function
 - [x] tests and CI definitions
 - [x] explicit Gradle 8.9 CI toolchain
 - [x] Kotlin/Compose compiler plugin aligned to 2.2.21 for Gradle 8.9 / AGP 8.7.x compatibility
@@ -83,7 +84,7 @@ The rooted lab phase remains isolated from transport/model code and has not been
 ## Current external gates
 
 The core software can proceed without model weights, but the next meaningful latency gate requires:
-1. a deployed Modal endpoint from current main
+1. a Modal `omnilive-runtime` Secret and a deployed endpoint from current main
 2. a reachable TURN service or managed TURN credentials
 3. a real Android test device
 4. a real ONNX model in the omnilive-models Volume for custom-model benchmarks

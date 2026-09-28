@@ -1,5 +1,6 @@
 package com.baatiku.omnilive.stream
 
+import android.annotation.TargetApi
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -10,8 +11,8 @@ import android.os.PowerManager
 
 class DeviceHealthMonitor(context:Context) {
     private val appContext=context.applicationContext
-    private val powerManager=appContext.getSystemService(PowerManager::class.java)
     private var started=false
+    private var thermalMonitor:ThermalMonitor?=null
 
     private val batteryReceiver=object:BroadcastReceiver() {
         override fun onReceive(context:Context?,intent:Intent?) {
@@ -19,12 +20,6 @@ class DeviceHealthMonitor(context:Context) {
             updateBattery(intent)
         }
     }
-
-    private val thermalListener=if(Build.VERSION.SDK_INT>=Build.VERSION_CODES.Q) {
-        PowerManager.OnThermalStatusChangedListener { status ->
-            LiveTelemetry.update { it.copy(thermalStatus=thermalLabel(status)) }
-        }
-    } else null
 
     fun start() {
         if(started) return
@@ -38,9 +33,8 @@ class DeviceHealthMonitor(context:Context) {
         }
         sticky?.let(::updateBattery)
 
-        if(Build.VERSION.SDK_INT>=Build.VERSION_CODES.Q && thermalListener!=null) {
-            powerManager.addThermalStatusListener(thermalListener)
-            LiveTelemetry.update { it.copy(thermalStatus=thermalLabel(powerManager.currentThermalStatus)) }
+        if(Build.VERSION.SDK_INT>=Build.VERSION_CODES.Q) {
+            thermalMonitor=ThermalMonitor(appContext.getSystemService(PowerManager::class.java)).also { it.start() }
         } else {
             LiveTelemetry.update { it.copy(thermalStatus="unsupported") }
         }
@@ -50,9 +44,8 @@ class DeviceHealthMonitor(context:Context) {
         if(!started) return
         started=false
         try { appContext.unregisterReceiver(batteryReceiver) } catch(_:Throwable) {}
-        if(Build.VERSION.SDK_INT>=Build.VERSION_CODES.Q && thermalListener!=null) {
-            try { powerManager.removeThermalStatusListener(thermalListener) } catch(_:Throwable) {}
-        }
+        thermalMonitor?.stop()
+        thermalMonitor=null
     }
 
     private fun updateBattery(intent:Intent) {
@@ -72,9 +65,22 @@ class DeviceHealthMonitor(context:Context) {
         }
     }
 
-    private fun thermalLabel(status:Int):String {
-        if(Build.VERSION.SDK_INT<Build.VERSION_CODES.Q) return "unsupported"
-        return when(status) {
+    @TargetApi(Build.VERSION_CODES.Q)
+    private class ThermalMonitor(private val powerManager:PowerManager) {
+        private val listener=PowerManager.OnThermalStatusChangedListener { status ->
+            LiveTelemetry.update { it.copy(thermalStatus=label(status)) }
+        }
+
+        fun start() {
+            powerManager.addThermalStatusListener(listener)
+            LiveTelemetry.update { it.copy(thermalStatus=label(powerManager.currentThermalStatus)) }
+        }
+
+        fun stop() {
+            try { powerManager.removeThermalStatusListener(listener) } catch(_:Throwable) {}
+        }
+
+        private fun label(status:Int):String = when(status) {
             PowerManager.THERMAL_STATUS_NONE -> "none"
             PowerManager.THERMAL_STATUS_LIGHT -> "light"
             PowerManager.THERMAL_STATUS_MODERATE -> "moderate"

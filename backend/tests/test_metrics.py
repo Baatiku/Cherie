@@ -21,3 +21,5 @@ def test_health_has_explicit_status():
     payload = response.json()
     assert payload["status"] in {"ok", "model_unavailable", "model_recovering"}
     assert isinstance(payload["ok"], bool)
+    assert isinstance(payload["build_sha"], str)
+    assert payload["build_sha"]

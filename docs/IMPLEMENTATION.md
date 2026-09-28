@@ -85,9 +85,13 @@
 - [x] rootlab runtime composition with real `su` capability probe, Android retry scheduler, Zoom target preset and processed-frame bridge
 - [x] separate rootlab-enabled APK build gate (`-Pomnilive.rootLab=true`) so lab-only app sources compile in CI
 - [ ] package-specific camera compatibility implementation
+  - [x] Zoom-scoped libxposed Camera2 lifecycle/session hooks
+  - [x] cross-process Zoom output-Surface handoff over rootlab-only Messenger broker
+  - [x] WebRTC-shared EGL context handoff and processed-frame renderer attach attempt
+  - [ ] device-validated physical camera producer suppression/output replacement
 - [x] isolated rootlab camera lifecycle recovery/rebind policy with bounded retries and physical-camera fallback
 
-The rooted lab phase remains isolated from transport/model code. The generic output boundary and Surface producer are now ready for an isolated lab adapter, but no root-specific code has been mixed into normal OmniLive.
+The rooted lab phase remains isolated from transport/model code. Normal APKs use the normal manifest and do not package the exported broker component. Rootlab APKs use a rootlab-only manifest plus Zoom/Xposed broker classes. The current broker is deliberately fail-open until a rooted-device smoke report confirms hook activation and target Surface producer behavior.
 
 ## Phase 5 — hardening
 - [x] Android battery/charging/temperature and thermal-state telemetry
@@ -117,7 +121,9 @@ The rooted lab phase remains isolated from transport/model code. The generic out
 - [x] thermal-aware adaptive controller caps moderate heat at balanced and severe-or-worse at low_latency, then requires a healthy recovery window before upgrading
 - [x] copied live diagnostics include connection/ICE/network/frame/backend/bitrate/device/reference/error state plus the active thermal quality cap
 - [x] latest normal APK SHA-256: `fb43f7d144730a950ecf720dde09fee182db4b1787d9ddf8b7d4b4007f1ddfa7`
-- [x] latest rootlab APK SHA-256: `f608dd11c74e19a311cffffdb50f2cffb029b5ce46a848741c7e96799ac4933d`
+- [x] latest broker-enabled normal APK SHA-256: `33a7459c88c4bcbb7a11f509c829e6cb60c7fc80f0ecd2e53d7e37cdb3551be6`
+- [x] latest broker-enabled rootlab APK SHA-256: `baa35e69b12bc0e8f5289cb80b9bd9b880fcf20028c4626e5148a7efe6f35b17`
+- [x] broker-enabled APKs generated from application source commit `c5bd80527d3ca06fe1ffe1a5c0f6e5b2f2ad9047`
 - [x] backend CI passed 51 tests on application source commit `1b97d2522ed179f2d3c8d7496238d5b92d7d56c0` (one upstream Starlette/TestClient deprecation warning remains)
 - [x] zero-cost CPU staging backend is live at `https://omnilive-backend-staging.onrender.com` for install/session/WebRTC transport testing; it is not the production Modal GPU backend
 

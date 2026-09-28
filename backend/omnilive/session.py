@@ -1,5 +1,6 @@
 import hashlib,hmac,secrets,threading,time
 from dataclasses import dataclass
+from .reference_image import ValidatedReferenceImage
 from .config import settings
 from .models import EffectProfile,QualityProfile,SessionResponse
 
@@ -13,6 +14,7 @@ class SessionState:
     expires_at:int
     last_sequence:int=-1
     worker_key:str=""
+    reference_image:ValidatedReferenceImage|None=None
 
 class SessionRegistry:
     def __init__(self):
@@ -58,6 +60,19 @@ class SessionRegistry:
             if not hmac.compare_digest(state.token_digest,self._digest(token)):
                 return None
             return state
+
+    def set_reference_image(self,session_id:str,image:ValidatedReferenceImage)->bool:
+        with self._lock:
+            state=self._items.get(session_id)
+            if state is None:
+                return False
+            state.reference_image=image
+            return True
+
+    def get_reference_image(self,session_id:str)->ValidatedReferenceImage|None:
+        with self._lock:
+            state=self._items.get(session_id)
+            return None if state is None else state.reference_image
 
     def update_profile(self,session_id:str,profile:QualityProfile)->bool:
         with self._lock:

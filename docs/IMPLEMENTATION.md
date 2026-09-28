@@ -38,6 +38,8 @@
 - [ ] optional renderer-present timestamp refinement beyond renderer-input timing
 
 ## Phase 3 — GPU visual processor
+- [x] session-affine Android reference-image upload over the pinned live WebSocket
+- [x] backend reference-image validation, normalization, bounded storage and metadata acknowledgement
 - [x] GPU-resident processor contract
 - [x] processor p50/p95 timing
 - [x] Modal Volume mounted at /models

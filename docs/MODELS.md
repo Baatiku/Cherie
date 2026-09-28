@@ -177,3 +177,20 @@ The separate adaptation probe does not hold the crop cap. It force-stresses the 
 - crop-cap reduction
 
 A Modal preload means `runtime_loaded_before=true` is expected in a warm L4 container. `runtime_load_ms` still records the model session load cost from container startup. A genuinely cold-start benchmark must also record Modal container startup time externally.
+
+
+## Session reference image
+
+Android can select one reference image before starting a live session. The app normalizes it locally to a bounded JPEG and sends it once over the already-pinned `/v1/live` WebSocket after the SDP answer.
+
+The backend:
+- validates base64 and decoded image data
+- rejects oversized or tiny inputs
+- caps the longest side to 1024 px
+- normalizes the image to JPEG
+- stores it only in the current in-memory pinned session
+- returns width, height and SHA-256 metadata to Android
+
+This deliberately avoids a separate HTTP upload, because an unrelated Modal HTTP request could land on a different GPU container from the pinned live WebSocket.
+
+The current generic single-input `custom_onnx` adapter does not automatically consume the reference image. The session storage is the input contract for a future reference-aware model adapter (for example a two-input identity/style model) without requiring another Android upload redesign.

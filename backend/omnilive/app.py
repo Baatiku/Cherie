@@ -23,6 +23,7 @@ from .models import (
     WebRtcOffer,
 )
 from .processor import ProcessingTrace, processor
+from .reference_image import decode_reference_image
 from .regions import Region
 from .session import registry
 from .temporal import profile_defaults
@@ -90,6 +91,12 @@ class LiveSocketStart(BaseModel):
     region_hint: str | None = None
     sdp: str = Field(min_length=1)
     type: str = "offer"
+
+
+class LiveReferenceImage(BaseModel):
+    action: str = "reference_image"
+    mime_type: str = "image/jpeg"
+    data_base64: str = Field(min_length=16, max_length=3_000_000)
 
 
 class LiveFrameMark(BaseModel):
@@ -501,6 +508,30 @@ async def live_socket(websocket: WebSocket):
                     continue
                 if registry.update_profile(session.session_id, profile):
                     await send_json({"event": "profile", "profile": profile.value})
+                continue
+            if action == "reference_image":
+                try:
+                    upload = LiveReferenceImage.model_validate(message)
+                    reference = decode_reference_image(upload.data_base64)
+                    if not registry.set_reference_image(session.session_id, reference):
+                        raise ValueError("live session is no longer available")
+                    await send_json(
+                        {
+                            "event": "reference_image",
+                            "status": "ready",
+                            "width": reference.width,
+                            "height": reference.height,
+                            "sha256": reference.sha256,
+                        }
+                    )
+                except (ValidationError, ValueError) as exc:
+                    await send_json(
+                        {
+                            "event": "reference_image",
+                            "status": "error",
+                            "detail": str(exc),
+                        }
+                    )
                 continue
             if action == "frame_mark":
                 try:

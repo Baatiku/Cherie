@@ -64,3 +64,115 @@ def test_prepare_image_supports_nchw_and_nhwc():
     assert a_is_nchw is True
     assert b.shape==(1,24,36,3)
     assert b_is_nchw is False
+
+
+def test_transient_gpu_failure_reloads_on_next_provider(monkeypatch):
+    import omnilive.model_runtime as model_runtime
+
+    fake=SimpleNamespace(
+        model_id="fake.onnx",
+        model_root="/models",
+        model_adapter="single_image",
+        model_live_input="",
+        model_reference_input="",
+        model_allow_cpu_fallback=True,
+        model_retry_cooldown_seconds=0.0,
+        model_provider_quarantine_seconds=30.0,
+    )
+    monkeypatch.setattr(model_runtime,"settings",fake)
+
+    meta=SimpleNamespace(name="live",shape=[1,3,8,8],type="tensor(float)")
+
+    class FailingSession:
+        def get_inputs(self):
+            return [meta]
+
+        def get_providers(self):
+            return ["CUDAExecutionProvider","CPUExecutionProvider"]
+
+        def run(self,*_args,**_kwargs):
+            raise RuntimeError("CUDAExecutionProvider failed to allocate GPU memory")
+
+    class RecoveredSession:
+        def get_inputs(self):
+            return [meta]
+
+        def get_providers(self):
+            return ["CPUExecutionProvider"]
+
+        def run(self,*_args,**_kwargs):
+            return [np.zeros((1,3,8,8),dtype=np.float32)]
+
+    runtime=OnnxRuntime()
+    sessions=[FailingSession(),RecoveredSession()]
+    load_calls=[]
+
+    def fake_load(strict=False):
+        load_calls.append(strict)
+        session=sessions.pop(0)
+        runtime._session=session
+        runtime._providers=list(session.get_providers())
+        return session
+
+    monkeypatch.setattr(runtime,"load",fake_load)
+
+    rgb=np.zeros((8,8,3),dtype=np.uint8)
+    output=runtime.run_image(rgb)
+
+    assert output.shape==rgb.shape
+    assert len(load_calls)==2
+    status=runtime.status()
+    assert status["execution_failure_count"]==1
+    assert status["recovery_count"]==1
+    assert status["consecutive_failures"]==0
+    assert status["providers"]==["CPUExecutionProvider"]
+    assert status["quarantined_providers"]==["CUDAExecutionProvider"]
+
+
+def test_non_provider_model_error_does_not_retry(monkeypatch):
+    import omnilive.model_runtime as model_runtime
+
+    fake=SimpleNamespace(
+        model_id="fake.onnx",
+        model_root="/models",
+        model_adapter="single_image",
+        model_live_input="",
+        model_reference_input="",
+        model_allow_cpu_fallback=False,
+        model_retry_cooldown_seconds=0.0,
+        model_provider_quarantine_seconds=30.0,
+    )
+    monkeypatch.setattr(model_runtime,"settings",fake)
+
+    meta=SimpleNamespace(name="live",shape=[1,3,8,8],type="tensor(float)")
+
+    class InvalidSession:
+        def get_inputs(self):
+            return [meta]
+
+        def get_providers(self):
+            return ["CPUExecutionProvider"]
+
+        def run(self,*_args,**_kwargs):
+            raise RuntimeError("invalid input dimensions")
+
+    runtime=OnnxRuntime()
+    session=InvalidSession()
+    calls=[]
+
+    def fake_load(strict=False):
+        calls.append(strict)
+        runtime._session=session
+        runtime._providers=list(session.get_providers())
+        return session
+
+    monkeypatch.setattr(runtime,"load",fake_load)
+
+    with pytest.raises(RuntimeError,match="invalid input dimensions"):
+        runtime.run_image(np.zeros((8,8,3),dtype=np.uint8))
+
+    assert len(calls)==1
+    status=runtime.status()
+    assert status["execution_failure_count"]==1
+    assert status["recovery_count"]==0
+    assert status["quarantined_providers"]==[]

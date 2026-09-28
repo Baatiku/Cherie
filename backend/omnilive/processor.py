@@ -128,7 +128,7 @@ class LocalizedTemporalProcessor:
             tracker_backend=LandmarkRegionTracker.name,
             landmark_backend=getattr(self.landmark_provider, "name", "none"),
             face_alignment_enabled=settings.face_alignment_enabled,
-            reference_image_ready=context.reference_rgb is not None,
+            reference_image_ready=False,
             model_adapter=runtime.adapter,
         )
 
@@ -427,6 +427,8 @@ class LocalizedTemporalProcessor:
                 tracking_confidence=0.0,
                 landmark_points=0,
                 face_alignment_enabled=settings.face_alignment_enabled,
+                reference_image_ready=context.reference_rgb is not None,
+                model_adapter=runtime.adapter,
             )
             return rgb
         region = region.padded(settings.region_padding, w, h)
@@ -450,6 +452,8 @@ class LocalizedTemporalProcessor:
                 tracking_confidence=round(context.tracker.confidence, 3),
                 landmark_points=0 if context.semantic_landmarks is None else context.semantic_landmarks.count,
                 face_alignment_enabled=settings.face_alignment_enabled,
+                reference_image_ready=context.reference_rgb is not None,
+                model_adapter=runtime.adapter,
             )
             return self._composite(rgb, region, cached)
 
@@ -518,6 +522,8 @@ class LocalizedTemporalProcessor:
             tracking_confidence=round(context.tracker.confidence, 3),
             landmark_points=0 if context.semantic_landmarks is None else context.semantic_landmarks.count,
             face_alignment_enabled=settings.face_alignment_enabled,
+            reference_image_ready=context.reference_rgb is not None,
+            model_adapter=runtime.adapter,
         )
         return self._composite(rgb, region, transformed)
 

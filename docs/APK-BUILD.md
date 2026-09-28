@@ -95,3 +95,27 @@ OMNILIVE_DEFAULT_BACKEND_URL=https://<backend-host>
 ```
 
 If it is unset, the debug/development fallback remains `http://10.0.2.2:8000`; users can also edit the Backend URL directly in the app before starting a session.
+
+
+## Thermal-aware diagnostic build
+
+Verified source:
+
+```text
+975351f7f1c4424c37539b066a637c7f94c0c1cc
+```
+
+This build adds OS thermal-status-aware quality protection on top of the existing network/backend adaptation. Android thermal status is used instead of arbitrary battery-temperature cutoffs:
+
+- moderate: caps the session at `balanced`
+- severe / critical / emergency / shutdown: forces `low_latency`
+- none / light: allows recovery, but only after a healthy hold window
+- network RTT/loss/backend-p95 adaptation still applies under the thermal ceiling
+
+The build passed the app tests, rootlab tests and `:app:assembleDebug`.
+
+SHA-256:
+
+```text
+68dbf6f83f291215108bad12b783c4e09f4969cd27c662b16ed0aac5611f7cd6
+```

@@ -89,7 +89,7 @@ The rooted lab phase remains isolated from transport/model code. The generic out
 
 ## Phase 5 — hardening
 - [x] Android battery/charging/temperature and thermal-state telemetry
-- [ ] measured thermal-driven quality policy
+- [x] OS thermal-status-driven quality caps with gradual post-heat recovery
 - [x] ONNX provider-level failure recovery/quarantine with controlled retry cooldown
 - [ ] Modal GPU worker retry/reallocation after worker/container loss
 - [x] Prometheus-format backend metrics export
@@ -111,8 +111,9 @@ The rooted lab phase remains isolated from transport/model code. The generic out
 - [x] debug-only cleartext traffic support retained for local HTTP development endpoints
 - [x] release/default backend URL is build-configurable with `OMNILIVE_DEFAULT_BACKEND_URL`
 - [x] latest Render build passed `:app:testDebugUnitTest :rootlab:testDebugUnitTest :app:assembleDebug`
-- [x] latest install-test APK generated from source commit `9663b24fcb5a06436506f4a73bb73013cb267d1a`
-- [x] latest APK SHA-256: `c33406549985b4cca7229363b14576d0390590a96bf57420a538796cc5c56f5b`
+- [x] latest install-test APK generated from source commit `975351f7f1c4424c37539b066a637c7f94c0c1cc`
+- [x] thermal-aware adaptive controller caps moderate heat at balanced and severe-or-worse at low_latency, then requires a healthy recovery window before upgrading
+- [x] latest APK SHA-256: `68dbf6f83f291215108bad12b783c4e09f4969cd27c662b16ed0aac5611f7cd6`
 - [x] backend CI passed 49 tests on the same source commit (one upstream Starlette/TestClient deprecation warning remains)
 
 ## Current external gates

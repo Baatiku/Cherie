@@ -7,7 +7,7 @@
 - [x] Modal L4 ASGI service
 - [x] tests and CI definitions
 - [x] explicit Gradle 8.9 CI toolchain
-- [x] Kotlin 2 Compose compiler plugin
+- [x] Kotlin/Compose compiler plugin aligned to 2.2.21 for Gradle 8.9 / AGP 8.7.x compatibility
 - [x] lightweight CPU test dependencies separated from GPU image
 
 ## Phase 2 — realtime transport
@@ -44,7 +44,7 @@
 - [x] generic NCHW/NHWC image-to-image adapter
 - [x] built-in effects
 - [x] per-session effect selection
-- [x] Android effect controls
+- [x] Android effect controls including custom ONNX model selection
 - [x] model diagnostics and synthetic benchmark
 - [x] replaceable detector interface
 - [x] zero-download OpenCV face detector baseline

@@ -51,20 +51,37 @@ class MainActivity:ComponentActivity() {
                             },
                             label={Text("Backend URL")},
                             singleLine=true,
+                            enabled=!running,
                             modifier=Modifier.fillMaxWidth()
                         )
 
                         Text("Quality")
                         Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
                             listOf("low_latency","balanced","high").forEach { item ->
-                                FilterChip(selected=profile==item,onClick={profile=item},label={Text(item)})
+                                FilterChip(selected=profile==item,onClick={profile=item},enabled=!running,label={Text(item)})
                             }
                         }
 
                         Text("Visual effect")
-                        Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-                            listOf("original","soft_focus","monochrome","pixelate").forEach { item ->
-                                FilterChip(selected=effect==item,onClick={effect=item},label={Text(item)})
+                        val effects=listOf(
+                            "original" to "original",
+                            "soft_focus" to "soft",
+                            "monochrome" to "mono",
+                            "pixelate" to "pixel",
+                            "custom_onnx" to "model"
+                        )
+                        Column(verticalArrangement=Arrangement.spacedBy(6.dp)) {
+                            effects.chunked(3).forEach { row ->
+                                Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+                                    row.forEach { item ->
+                                        FilterChip(
+                                            selected=effect==item.first,
+                                            onClick={effect=item.first},
+                                            enabled=!running,
+                                            label={Text(item.second)}
+                                        )
+                                    }
+                                }
                             }
                         }
 

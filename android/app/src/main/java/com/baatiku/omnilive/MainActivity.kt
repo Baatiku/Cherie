@@ -5,20 +5,28 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.baatiku.omnilive.stream.LiveStreamService
 import com.baatiku.omnilive.stream.LiveTelemetry
+import com.baatiku.omnilive.stream.ReferenceImageStore
 import com.baatiku.omnilive.ui.ReturnedVideoView
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.Locale
 
 class MainActivity:ComponentActivity() {
@@ -31,13 +39,47 @@ class MainActivity:ComponentActivity() {
 
         setContent {
             MaterialTheme {
+                val prefs=remember { getSharedPreferences("omnilive",MODE_PRIVATE) }
+                val scope=rememberCoroutineScope()
                 var running by remember { mutableStateOf(false) }
                 var profile by remember { mutableStateOf("balanced") }
                 var effect by remember { mutableStateOf("original") }
                 var backendUrl by remember {
-                    mutableStateOf(getSharedPreferences("omnilive",MODE_PRIVATE)
-                        .getString("backend_url",BuildConfig.DEFAULT_BACKEND_URL) ?: BuildConfig.DEFAULT_BACKEND_URL)
+                    mutableStateOf(
+                        prefs.getString("backend_url",BuildConfig.DEFAULT_BACKEND_URL)
+                            ?: BuildConfig.DEFAULT_BACKEND_URL
+                    )
                 }
+                var referencePath by remember {
+                    mutableStateOf(prefs.getString("reference_image_path",null))
+                }
+                var referencePreview by remember {
+                    mutableStateOf(ReferenceImageStore.preview(referencePath)?.asImageBitmap())
+                }
+                var referencePickerStatus by remember { mutableStateOf<String?>(null) }
+
+                val referencePicker=rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+                    if(uri!=null) {
+                        scope.launch {
+                            referencePickerStatus="Preparing reference image…"
+                            try {
+                                val imported=withContext(Dispatchers.IO) {
+                                    ReferenceImageStore.import(this@MainActivity,uri)
+                                }
+                                referencePath=imported.path
+                                prefs.edit().putString("reference_image_path",imported.path).apply()
+                                referencePreview=withContext(Dispatchers.IO) {
+                                    ReferenceImageStore.preview(imported.path)?.asImageBitmap()
+                                }
+                                referencePickerStatus=
+                                    imported.width.toString()+"×"+imported.height+" · "+(imported.bytes/1024L)+" KB"
+                            } catch(t:Throwable) {
+                                referencePickerStatus=t.message ?: "Unable to import reference image"
+                            }
+                        }
+                    }
+                }
+
                 val telemetry by LiveTelemetry.state.collectAsStateWithLifecycle()
                 val scroll=rememberScrollState()
 
@@ -53,13 +95,58 @@ class MainActivity:ComponentActivity() {
                             value=backendUrl,
                             onValueChange={
                                 backendUrl=it
-                                getSharedPreferences("omnilive",MODE_PRIVATE).edit().putString("backend_url",it).apply()
+                                prefs.edit().putString("backend_url",it).apply()
                             },
                             label={Text("Backend URL")},
                             singleLine=true,
                             enabled=!running,
                             modifier=Modifier.fillMaxWidth()
                         )
+
+                        Text("Reference image",style=MaterialTheme.typography.titleMedium)
+                        referencePreview?.let { preview ->
+                            Image(
+                                bitmap=preview,
+                                contentDescription="Selected reference image",
+                                contentScale=ContentScale.Fit,
+                                modifier=Modifier.fillMaxWidth().heightIn(max=220.dp)
+                            )
+                        }
+                        Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+                            Button(
+                                onClick={ referencePicker.launch("image/*") },
+                                enabled=!running
+                            ) {
+                                Text(if(referencePath==null) "Choose image" else "Change image")
+                            }
+                            if(referencePath!=null) {
+                                OutlinedButton(
+                                    onClick={
+                                        ReferenceImageStore.clear(referencePath)
+                                        referencePath=null
+                                        referencePreview=null
+                                        referencePickerStatus=null
+                                        prefs.edit().remove("reference_image_path").apply()
+                                    },
+                                    enabled=!running
+                                ) { Text("Remove") }
+                            }
+                        }
+                        if(referencePath==null) {
+                            Text("No reference image selected.")
+                        } else {
+                            Text(referencePickerStatus ?: "Reference image saved locally.")
+                        }
+                        if(running || telemetry.referenceImageStatus!="none") {
+                            Text(
+                                "Reference upload: "+telemetry.referenceImageStatus+
+                                    (if(telemetry.referenceImageWidth!=null && telemetry.referenceImageHeight!=null)
+                                        " · "+telemetry.referenceImageWidth+"×"+telemetry.referenceImageHeight else "")
+                            )
+                            telemetry.referenceImageError?.let {
+                                Text("Reference: "+it,color=MaterialTheme.colorScheme.error)
+                            }
+                        }
 
                         Text("Quality")
                         Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
@@ -93,13 +180,12 @@ class MainActivity:ComponentActivity() {
 
                         Button(onClick={
                             if(!running) {
-                                ContextCompat.startForegroundService(
-                                    this@MainActivity,
-                                    Intent(this@MainActivity,LiveStreamService::class.java)
-                                        .putExtra("profile",profile)
-                                        .putExtra("effect",effect)
-                                        .putExtra("backend_url",backendUrl)
-                                )
+                                val intent=Intent(this@MainActivity,LiveStreamService::class.java)
+                                    .putExtra("profile",profile)
+                                    .putExtra("effect",effect)
+                                    .putExtra("backend_url",backendUrl)
+                                referencePath?.let { intent.putExtra("reference_image_path",it) }
+                                ContextCompat.startForegroundService(this@MainActivity,intent)
                             } else stopService(Intent(this@MainActivity,LiveStreamService::class.java))
                             running=!running
                         }) { Text(if(running) "Stop live session" else "Start live session") }

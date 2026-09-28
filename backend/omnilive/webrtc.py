@@ -38,8 +38,10 @@ class LatestFrameSource:
                     self._latest = (self._latest_sequence, frame, received_at)
                     self._condition.notify_all()
         except asyncio.CancelledError:
-            raise
+            pass
         except Exception:
+            pass
+        finally:
             async with self._condition:
                 self._closed = True
                 self._condition.notify_all()

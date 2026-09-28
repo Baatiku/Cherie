@@ -38,15 +38,18 @@ class WebRtcClient(
     private var previousLost:Long?=null
     private var previousReceived:Long?=null
     private var currentNetwork:Network?=null
+    private var hasSeenNetwork=false
     private var networkCallbackRegistered=false
     @Volatile private var backendP95Ms:Long=0
 
     private val networkCallback=object:ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network:Network) {
             val previous=currentNetwork
+            val firstNetwork=!hasSeenNetwork
+            hasSeenNetwork=true
             currentNetwork=network
             LiveTelemetry.update { it.copy(networkState="available") }
-            if(previous!=null && previous!=network && !stopped.get()) {
+            if(!firstNetwork && previous!=network && !stopped.get()) {
                 reconnectForNetworkChange()
             }
         }
@@ -312,6 +315,7 @@ class WebRtcClient(
             networkCallbackRegistered=false
         }
         currentNetwork=null
+        hasSeenNetwork=false
         try { capturer?.stopCapture() } catch(_:InterruptedException) {}
         capturer?.dispose()
         capturer=null

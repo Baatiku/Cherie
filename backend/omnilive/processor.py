@@ -243,12 +243,16 @@ class LocalizedTemporalProcessor:
                 tracking_reset_counter.increment()
                 context.clear_cache()
 
+        frames_since_detection = context.frame_index - context.last_detection_frame
         detector_due = (
             force_region is None
             and (
-                tracked is None
-                or context.frame_index - context.last_detection_frame >= budget.detector_interval
-                or context.tracker.confidence < settings.tracker_min_confidence
+                frames_since_detection >= budget.detector_interval
+                or (
+                    tracked is not None
+                    and context.tracker.confidence < settings.tracker_min_confidence
+                    and frames_since_detection >= 2
+                )
             )
         )
         if detector_due:

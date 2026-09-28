@@ -133,6 +133,10 @@ class OnnxRuntime:
     def requires_reference(self) -> bool:
         return self.adapter == "dual_image"
 
+    @property
+    def can_attempt_inference(self) -> bool:
+        return self._cooldown_remaining_ms() <= 0
+
     def input_status(self) -> dict:
         session = self._session
         if session is None:
@@ -352,6 +356,8 @@ class OnnxRuntime:
             "recovery_count": self._recovery_count,
             "consecutive_failures": self._consecutive_failures,
             "recovery_cooldown_remaining_ms": self._cooldown_remaining_ms(),
+            "retry_cooldown_remaining_ms": self._cooldown_remaining_ms(),
+            "recovering": not self.can_attempt_inference,
             "quarantined_providers": self._quarantined_providers(),
             "allow_cpu_fallback": bool(getattr(settings, "model_allow_cpu_fallback", False)),
             **self.input_status(),

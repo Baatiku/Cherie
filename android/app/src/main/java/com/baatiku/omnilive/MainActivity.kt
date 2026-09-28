@@ -24,7 +24,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.baatiku.omnilive.diagnostics.DeviceDiagnostics
 import com.baatiku.omnilive.diagnostics.LiveDiagnostics
-import com.baatiku.omnilive.net.SessionApi
+import com.baatiku.omnilive.net.TransportPreflight
 import com.baatiku.omnilive.stream.LiveStreamService
 import com.baatiku.omnilive.stream.LiveTelemetry
 import com.baatiku.omnilive.stream.ReferenceImageStore
@@ -147,30 +147,25 @@ class MainActivity:ComponentActivity() {
                                 onClick={
                                     if(!backendChecking) {
                                         backendChecking=true
-                                        backendCheckStatus="Checking backend…"
+                                        backendCheckStatus="Checking transport…"
                                         scope.launch {
                                             val result=runCatching {
                                                 withContext(Dispatchers.IO) {
-                                                    SessionApi.health(backendUrl)
+                                                    TransportPreflight.run(
+                                                        baseUrl=backendUrl,
+                                                        profile=profile,
+                                                        effect=effect
+                                                    )
                                                 }
                                             }
                                             backendCheckStatus=result.fold(
-                                                onSuccess={ health ->
-                                                    if(health.ok) {
-                                                        "Backend OK · "+health.status+
-                                                            " · model "+when {
-                                                                !health.modelConfigured -> "not configured"
-                                                                health.modelLoaded -> "loaded"
-                                                                else -> "unavailable"
-                                                            }+
-                                                            (if(health.providers.isNotEmpty())
-                                                                " · "+health.providers.joinToString("/") else "")
-                                                    } else {
-                                                        "Backend not ready · "+health.status
-                                                    }
+                                                onSuccess={ preflight ->
+                                                    preflight.summary()+
+                                                        " · auth "+if(preflight.sessionValidated) "ok" else "failed"+
+                                                        " · "+preflight.credentialMode
                                                 },
                                                 onFailure={ error ->
-                                                    "Backend check failed: "+(error.message ?: error.javaClass.simpleName)
+                                                    "Transport check failed: "+(error.message ?: error.javaClass.simpleName)
                                                 }
                                             )
                                             backendChecking=false
@@ -178,7 +173,7 @@ class MainActivity:ComponentActivity() {
                                     }
                                 },
                                 enabled=!backendChecking && backendUrl.isNotBlank()
-                            ) { Text(if(backendChecking) "Checking…" else "Test backend") }
+                            ) { Text(if(backendChecking) "Checking…" else "Test transport") }
                             OutlinedButton(
                                 onClick={
                                     val clipboard=getSystemService(ClipboardManager::class.java)
@@ -193,7 +188,7 @@ class MainActivity:ComponentActivity() {
                                                     )
                                                 )
                                                 appendLine(
-                                                    "Backend preflight: "+
+                                                    "Transport preflight: "+
                                                         (backendCheckStatus ?: "not run")
                                                 )
                                                 appendLine()
@@ -208,7 +203,7 @@ class MainActivity:ComponentActivity() {
                         backendCheckStatus?.let {
                             Text(
                                 it,
-                                color=if(it.startsWith("Backend OK"))
+                                color=if(it.startsWith("Transport OK"))
                                     MaterialTheme.colorScheme.primary
                                 else MaterialTheme.colorScheme.error
                             )

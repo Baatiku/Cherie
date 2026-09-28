@@ -24,24 +24,37 @@ class LiveStreamService:Service() {
         val backendUrl=intent?.getStringExtra("backend_url") ?: BuildConfig.DEFAULT_BACKEND_URL
         val referenceImagePath=intent?.getStringExtra("reference_image_path")
         val profile=QualityProfile.fromName(profileName)
-        val text=profile.width.toString()+"×"+profile.height+" @ "+profile.cameraFps+" fps"
-        val n=Notification.Builder(this,CHANNEL_ID)
-            .setContentTitle("OmniLive active").setContentText(text)
-            .setSmallIcon(android.R.drawable.presence_video_online).build()
-        startForeground(NOTIFICATION_ID,n)
+        LiveSessionState.starting(profileName,effectName,backendUrl)
 
-        if(client==null) {
-            client=WebRtcClient(this,backendUrl,profileName,effectName,referenceImagePath)
-            client!!.start()
+        return try {
+            val text=profile.width.toString()+"×"+profile.height+" @ "+profile.cameraFps+" fps"
+            val n=Notification.Builder(this,CHANNEL_ID)
+                .setContentTitle("OmniLive active").setContentText(text)
+                .setSmallIcon(android.R.drawable.presence_video_online).build()
+            startForeground(NOTIFICATION_ID,n)
+
+            if(client==null) {
+                client=WebRtcClient(this,backendUrl,profileName,effectName,referenceImagePath)
+                client!!.start()
+            }
+            LiveSessionState.active()
+            START_NOT_STICKY
+        } catch(t:Throwable) {
+            LiveSessionState.failed(t)
+            client?.stop()
+            client=null
+            stopSelf(startId)
+            START_NOT_STICKY
         }
-        return START_NOT_STICKY
     }
 
     override fun onDestroy() {
+        LiveSessionState.stopping()
         client?.stop()
         client=null
         deviceHealth?.stop()
         deviceHealth=null
+        LiveSessionState.idle()
         super.onDestroy()
     }
     override fun onBind(intent:Intent?):IBinder?=null

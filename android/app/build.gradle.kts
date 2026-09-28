@@ -15,6 +15,12 @@ val buildCommit = providers.environmentVariable("OMNILIVE_BUILD_SHA")
     .orNull
     ?: "dev"
 
+val defaultBackendUrl = providers.environmentVariable("OMNILIVE_DEFAULT_BACKEND_URL")
+    .orNull
+    ?.trim()
+    ?.takeIf { it.isNotBlank() }
+    ?: "http://10.0.2.2:8000"
+
 android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -29,7 +35,7 @@ android {
         targetSdk = 35
         versionCode = 6
         versionName = "0.6.0"
-        buildConfigField("String", "DEFAULT_BACKEND_URL", "\"http://10.0.2.2:8000\"")
+        buildConfigField("String", "DEFAULT_BACKEND_URL", "\"${defaultBackendUrl.replace("\"", "")}\"")
         buildConfigField("boolean", "ROOT_LAB_ENABLED", rootLabEnabled.toString())
         buildConfigField("String", "BUILD_COMMIT", "\"${buildCommit.replace("\"", "")}\"")
     }

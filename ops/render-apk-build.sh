@@ -57,6 +57,9 @@ sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
 
 echo "sdk.dir=${ANDROID_HOME}" > "${ROOT_DIR}/android/local.properties"
 
+echo "==> Validating device smoke harness syntax"
+bash -n "${ROOT_DIR}/ops/android-device-smoke.sh"
+
 echo "==> Running OmniLive Android tests and normal debug build"
 cd "${ROOT_DIR}/android"
 gradle :app:testDebugUnitTest :rootlab:testDebugUnitTest :app:assembleDebug --stacktrace --no-daemon

@@ -57,9 +57,9 @@ sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
 
 echo "sdk.dir=${ANDROID_HOME}" > "${ROOT_DIR}/android/local.properties"
 
-echo "==> Running OmniLive Android tests and debug build"
+echo "==> Running OmniLive Android tests and normal debug build"
 cd "${ROOT_DIR}/android"
-gradle   :app:testDebugUnitTest   :rootlab:testDebugUnitTest   :app:assembleDebug   --stacktrace   --no-daemon
+gradle :app:testDebugUnitTest :rootlab:testDebugUnitTest :app:assembleDebug --stacktrace --no-daemon
 
 APK_PATH="${ROOT_DIR}/android/app/build/outputs/apk/debug/app-debug.apk"
 if [[ ! -s "${APK_PATH}" ]]; then
@@ -68,9 +68,19 @@ if [[ ! -s "${APK_PATH}" ]]; then
 fi
 
 cp "${APK_PATH}" "${ARTIFACT_DIR}/omnilive-debug.apk"
+
+echo "==> Compiling rootlab-enabled debug variant"
+gradle :app:assembleDebug -Pomnilive.rootLab=true --stacktrace --no-daemon
+if [[ ! -s "${APK_PATH}" ]]; then
+  echo "Rootlab APK was not produced at ${APK_PATH}" >&2
+  exit 1
+fi
+cp "${APK_PATH}" "${ARTIFACT_DIR}/omnilive-rootlab-debug.apk"
+
 (
   cd "${ARTIFACT_DIR}"
   sha256sum omnilive-debug.apk > omnilive-debug.apk.sha256
+  sha256sum omnilive-rootlab-debug.apk > omnilive-rootlab-debug.apk.sha256
 )
 
 cat > "${ARTIFACT_DIR}/index.html" <<'HTML'
@@ -84,11 +94,14 @@ cat > "${ARTIFACT_DIR}/index.html" <<'HTML'
 <body style="font-family:system-ui,sans-serif;max-width:640px;margin:40px auto;padding:16px">
   <h1>OmniLive debug APK</h1>
   <p>Built from the current OmniLive main branch for install testing.</p>
-  <p><a href="/omnilive-debug.apk">Download omnilive-debug.apk</a></p>
-  <p><a href="/omnilive-debug.apk.sha256">SHA-256 checksum</a></p>
+  <p><a href="/omnilive-debug.apk">Download normal omnilive-debug.apk</a></p>
+  <p><a href="/omnilive-debug.apk.sha256">Normal APK SHA-256 checksum</a></p>
+  <p><a href="/omnilive-rootlab-debug.apk">Download rooted-lab omnilive-rootlab-debug.apk</a></p>
+  <p><a href="/omnilive-rootlab-debug.apk.sha256">Rootlab APK SHA-256 checksum</a></p>
 </body>
 </html>
 HTML
 
-echo "==> APK ready: ${ARTIFACT_DIR}/omnilive-debug.apk"
+echo "==> APKs ready"
 cat "${ARTIFACT_DIR}/omnilive-debug.apk.sha256"
+cat "${ARTIFACT_DIR}/omnilive-rootlab-debug.apk.sha256"

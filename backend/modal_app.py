@@ -37,7 +37,7 @@ app=modal.App("omnilive")
 @modal.concurrent(max_inputs=1)
 @modal.asgi_app()
 def api():
-    from omnilive.model_runtime import runtime
-    runtime.load(strict=False)
+    from omnilive.processor import processor
+    processor.preload()
     from omnilive.app import app as fastapi_app
     return fastapi_app

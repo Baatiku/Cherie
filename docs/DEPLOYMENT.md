@@ -112,3 +112,15 @@ GET /metrics
 ```
 
 `/metrics` is Prometheus text format and exports processor/model/input-age latency, stale-frame and inference counters, active streams, adaptive neural/crop state, model-load state, and memory gauges when available.
+
+
+## GPU container preload
+
+The Modal L4 startup now calls the same global processor used by live WebRTC and preloads:
+- the configured visual ONNX runtime
+- the configured SCRFD face detector when its file exists
+- the configured semantic face landmark model when its file exists
+
+The optional person detector stays lazy because it is not part of the current live face pipeline and should not consume GPU memory before it is needed.
+
+Preload failures remain visible through `/health`, `/v1/model`, and vision diagnostics; missing optional detector/landmark weights still fall back to the existing baseline where configured.

@@ -135,6 +135,27 @@ class LocalizedTemporalProcessor:
     def vision_status(self) -> dict:
         return vision_provider_status(self.detector, self.landmark_provider, self.person_detector)
 
+    def preload_vision(self) -> dict:
+        detector = getattr(self.detector, "primary", self.detector)
+        providers = (
+            ("detector", detector),
+            ("landmark", self.landmark_provider),
+        )
+        preload = {}
+        for label, provider in providers:
+            vision_runtime = getattr(provider, "runtime", None)
+            available = bool(getattr(provider, "available", False))
+            loaded = False
+            if vision_runtime is not None and available:
+                loaded = vision_runtime.load() is not None
+            preload[label] = {
+                "configured": vision_runtime is not None,
+                "available": available,
+                "loaded": loaded,
+                "last_error": getattr(vision_runtime, "last_error", None) if vision_runtime is not None else None,
+            }
+        return preload
+
     def _refresh_landmarks(self, context: StreamContext, rgb: np.ndarray, region: Region) -> None:
         if self.landmark_provider is None:
             context.semantic_landmarks = None
@@ -577,6 +598,14 @@ class TimedProcessor:
 
     def vision_status(self) -> dict:
         return self.localized.vision_status()
+
+    def preload(self) -> dict:
+        runtime.load(strict=False)
+        return {
+            "visual_model": runtime.status(),
+            "vision_preload": self.localized.preload_vision(),
+            "vision": self.localized.vision_status(),
+        }
 
 
 def _video_frame(rgb: np.ndarray, source: VideoFrame) -> VideoFrame:

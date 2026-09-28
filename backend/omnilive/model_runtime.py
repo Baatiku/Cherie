@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from threading import Lock
+from threading import RLock
 import os
 import subprocess
 import time
@@ -13,13 +13,18 @@ from .config import settings
 
 class OnnxRuntime:
     def __init__(self):
-        self._lock = Lock()
+        self._lock = RLock()
         self._session = None
         self._model_path = None
         self._providers: list[str] = []
         self._last_error: str | None = None
         self._load_ms: float | None = None
         self._load_count = 0
+        self._failure_count = 0
+        self._recovery_count = 0
+        self._retry_after_monotonic = 0.0
+        self._last_failure_at: float | None = None
+        self._last_success_at: float | None = None
 
     @property
     def loaded(self) -> bool:
@@ -40,6 +45,47 @@ class OnnxRuntime:
     @property
     def load_ms(self) -> float | None:
         return self._load_ms
+
+    @property
+    def retry_cooldown_remaining_ms(self) -> float:
+        remaining = self._retry_after_monotonic - time.monotonic()
+        return round(max(0.0, remaining) * 1000.0, 3)
+
+    @property
+    def can_attempt_inference(self) -> bool:
+        return self.retry_cooldown_remaining_ms <= 0.0
+
+    def _cooldown_seconds(self) -> float:
+        return max(0.1, float(getattr(settings, "model_retry_cooldown_seconds", 2.0)))
+
+    def _record_failure(self, exc: Exception, invalidate_session: bool) -> None:
+        with self._lock:
+            self._last_error = str(exc)
+            self._failure_count += 1
+            self._last_failure_at = time.time()
+            self._retry_after_monotonic = time.monotonic() + self._cooldown_seconds()
+            if invalidate_session:
+                if self._session is not None:
+                    self._recovery_count += 1
+                self._session = None
+                self._providers = []
+
+    def _record_success(self) -> None:
+        with self._lock:
+            self._failure_count = 0
+            self._last_error = None
+            self._retry_after_monotonic = 0.0
+            self._last_success_at = time.time()
+
+    def reset(self, reason: str = "manual reset") -> None:
+        with self._lock:
+            had_session = self._session is not None
+            self._session = None
+            self._providers = []
+            self._retry_after_monotonic = 0.0
+            self._last_error = reason
+            if had_session:
+                self._recovery_count += 1
 
     def _resolve_path(self) -> Path | None:
         model_id = (settings.model_id or "").strip()
@@ -69,6 +115,16 @@ class OnnxRuntime:
             with self._lock:
                 if self._session is not None and self._model_path == path:
                     return self._session
+                if not self.can_attempt_inference:
+                    message = (
+                        "model runtime recovery cooldown active for "
+                        + str(self.retry_cooldown_remaining_ms)
+                        + " ms"
+                    )
+                    if strict:
+                        raise RuntimeError(message)
+                    return None
+
                 import onnxruntime as ort
 
                 available = ort.get_available_providers()
@@ -83,15 +139,17 @@ class OnnxRuntime:
                 ]
                 if not preferred:
                     preferred = ["CPUExecutionProvider"]
-                self._session = ort.InferenceSession(str(path), providers=preferred)
+                session = ort.InferenceSession(str(path), providers=preferred)
+                self._session = session
                 self._model_path = path
-                self._providers = list(self._session.get_providers())
-                self._last_error = None
+                self._providers = list(session.get_providers())
                 self._load_ms = (time.perf_counter() - started) * 1000.0
                 self._load_count += 1
-                return self._session
+                self._record_success()
+                return session
         except Exception as exc:
-            self._last_error = str(exc)
+            if "recovery cooldown active" not in str(exc):
+                self._record_failure(exc, invalidate_session=False)
             if strict:
                 raise
             return None
@@ -250,6 +308,12 @@ class OnnxRuntime:
             "providers": self.providers,
             "load_ms": self.load_ms,
             "load_count": self._load_count,
+            "failure_count": self._failure_count,
+            "recovery_count": self._recovery_count,
+            "recovering": not self.can_attempt_inference,
+            "retry_cooldown_remaining_ms": self.retry_cooldown_remaining_ms,
+            "last_failure_at": self._last_failure_at,
+            "last_success_at": self._last_success_at,
             "last_error": self.last_error,
             **self.input_status(),
         }
@@ -271,7 +335,12 @@ class OnnxRuntime:
         h, w = rgb.shape[:2]
         import cv2
 
-        y = session.run(None, feeds)[0]
+        try:
+            y = session.run(None, feeds)[0]
+        except Exception as exc:
+            self._record_failure(exc, invalidate_session=True)
+            raise
+        self._record_success()
         if y.ndim == 4:
             y = y[0]
         if live_nchw and y.ndim == 3 and y.shape[0] in (1, 3, 4):

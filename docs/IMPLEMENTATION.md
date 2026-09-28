@@ -84,14 +84,21 @@
 - [x] package-scoped compatibility lifecycle/state-machine boundary
 - [x] rootlab runtime composition with real `su` capability probe, Android retry scheduler, Zoom target preset and processed-frame bridge
 - [x] separate rootlab-enabled APK build gate (`-Pomnilive.rootLab=true`) so lab-only app sources compile in CI
-- [ ] package-specific camera compatibility implementation
+- [x] package-specific Zoom Camera2 compatibility source implementation
   - [x] Zoom-scoped libxposed Camera2 lifecycle/session hooks
   - [x] cross-process Zoom output-Surface handoff over rootlab-only Messenger broker
-  - [x] WebRTC-shared EGL context handoff and processed-frame renderer attach attempt
-  - [ ] device-validated physical camera producer suppression/output replacement
+  - [x] WebRTC-shared EGL context handoff and returned-frame Surface renderer
+  - [x] readiness handshake requiring shared EGL plus a live returned WebRTC stream before a new redirect is selected
+  - [x] Camera2 request-target substitution paired with session-output substitution
+  - [x] drained PRIVATE ImageReader dummy outputs for the physical Camera2 producer
+  - [x] legacy `List<Surface>`, `OutputConfiguration` and `SessionConfiguration` session redirection
+  - [x] post-create `prepare`, `tearDown`, `updateOutputConfiguration` and `finalizeOutputConfigurations` argument substitution
+  - [x] sticky physical/redirect session selection across multi-surface request construction and temporary returned-stream gaps
+  - [x] one-shot EGL swap logging so device smoke can prove an OmniLive returned frame reached a transferred Zoom Surface
+  - [ ] rooted-device validation that Zoom actually displays the returned OmniLive frames
 - [x] isolated rootlab camera lifecycle recovery/rebind policy with bounded retries and physical-camera fallback
 
-The rooted lab phase remains isolated from transport/model code. Normal APKs use the normal manifest and do not package the exported broker component. Rootlab APKs use a rootlab-only manifest plus Zoom/Xposed broker classes. The current broker is deliberately fail-open until a rooted-device smoke report confirms hook activation and target Surface producer behavior.
+The rooted lab phase remains isolated from transport/model code. Normal APKs use the normal manifest and do not package the exported broker component. Rootlab APKs use a rootlab-only manifest plus Zoom/Xposed broker classes. Before a Camera2 session commits to redirection, unsupported/not-ready paths remain fail-open on the physical camera. Once a request/session commits to redirected surfaces, the mapping stays consistent across temporary returned-stream gaps so Camera2 request targets cannot diverge from the configured session. Real Zoom/vendor behavior remains a rooted-device validation gate.
 
 ## Phase 5 — hardening
 - [x] Android battery/charging/temperature and thermal-state telemetry
@@ -121,9 +128,10 @@ The rooted lab phase remains isolated from transport/model code. Normal APKs use
 - [x] thermal-aware adaptive controller caps moderate heat at balanced and severe-or-worse at low_latency, then requires a healthy recovery window before upgrading
 - [x] copied live diagnostics include connection/ICE/network/frame/backend/bitrate/device/reference/error state plus the active thermal quality cap
 - [x] latest normal APK SHA-256: `fb43f7d144730a950ecf720dde09fee182db4b1787d9ddf8b7d4b4007f1ddfa7`
-- [x] latest broker-enabled normal APK SHA-256: `33a7459c88c4bcbb7a11f509c829e6cb60c7fc80f0ecd2e53d7e37cdb3551be6`
-- [x] latest broker-enabled rootlab APK SHA-256: `baa35e69b12bc0e8f5289cb80b9bd9b880fcf20028c4626e5148a7efe6f35b17`
-- [x] broker-enabled APKs generated from application source commit `c5bd80527d3ca06fe1ffe1a5c0f6e5b2f2ad9047`
+- [x] latest rootlab redirection normal APK SHA-256: `c552d8a200e87c6cba4b6a3adf25029e3f7a6e989273e33afffcabe7b9f91b02`
+- [x] latest rootlab redirection APK SHA-256: `084938924ae3b759cf4da131cad5f84a4b5e8f489037946e5a37c3c686f678c8`
+- [x] latest rootlab redirection APKs generated from application source commit `1a2bccee1a342c141efa8e0966ade374739c3de6`
+- [x] rootlab device smoke can independently require hook activation, Camera2 redirection and first returned-frame presentation to a Zoom target Surface
 - [x] backend CI passed 51 tests on application source commit `1b97d2522ed179f2d3c8d7496238d5b92d7d56c0` (one upstream Starlette/TestClient deprecation warning remains)
 - [x] zero-cost CPU staging backend is live at `https://omnilive-backend-staging.onrender.com` for install/session/WebRTC transport testing; it is not the production Modal GPU backend
 

@@ -5,9 +5,13 @@ import android.content.Intent
 import android.os.*
 import android.util.Log
 import android.view.Surface
+import com.baatiku.omnilive.stream.ProcessedFrameConsumer
+import com.baatiku.omnilive.stream.ProcessedFrameInfo
+import com.baatiku.omnilive.stream.ReturnedVideoBus
 import com.baatiku.omnilive.stream.SharedEglContextRegistry
 import com.baatiku.omnilive.stream.SurfaceFrameOutput
 import org.webrtc.EglBase
+import org.webrtc.VideoFrame
 
 /**
  * Rootlab-only broker that receives target-process Camera2 output Surfaces over Messenger and
@@ -21,18 +25,32 @@ class RootLabSurfaceBrokerService:Service() {
         const val TARGET_PACKAGE="us.zoom.videomeetings"
         const val MSG_SET_SURFACES=1
         const val MSG_CLEAR_SURFACES=2
+        const val MSG_QUERY_STATE=3
+        const val MSG_STATE=4
         const val KEY_SURFACES="surfaces"
+        const val KEY_READY="ready"
+        const val KEY_EGL_READY="egl_ready"
+        const val KEY_STREAM_READY="stream_ready"
         private const val TAG="OmniLiveRootBroker"
     }
 
     private val outputs=mutableListOf<SurfaceFrameOutput>()
     private val surfaces=mutableListOf<Surface>()
+    private var client:Messenger?=null
+
+    private val streamListener=object:ProcessedFrameConsumer {
+        override fun onProcessedFrame(frame:VideoFrame,info:ProcessedFrameInfo) = Unit
+        override fun onStreamAvailabilityChanged(available:Boolean) {
+            publishState()
+        }
+    }
 
     private val messenger=Messenger(Handler(Looper.getMainLooper()) { message ->
         if(!isAllowedSender(message.sendingUid)) {
             Log.w(TAG,"rejected message from uid="+message.sendingUid)
             return@Handler true
         }
+        message.replyTo?.let { client=it }
         when(message.what) {
             MSG_SET_SURFACES -> {
                 replaceSurfaces(readSurfaces(message.data))
@@ -40,6 +58,11 @@ class RootLabSurfaceBrokerService:Service() {
             }
             MSG_CLEAR_SURFACES -> {
                 clearSurfaces()
+                publishState()
+                true
+            }
+            MSG_QUERY_STATE -> {
+                publishState()
                 true
             }
             else -> false
@@ -54,12 +77,14 @@ class RootLabSurfaceBrokerService:Service() {
             } else {
                 attachPending(context)
             }
+            publishState()
         }
     }
 
     override fun onCreate() {
         super.onCreate()
         SharedEglContextRegistry.addListener(eglListener)
+        ReturnedVideoBus.addConsumer(streamListener)
         Log.i(TAG,"surface broker created")
     }
 
@@ -75,9 +100,31 @@ class RootLabSurfaceBrokerService:Service() {
 
     override fun onDestroy() {
         SharedEglContextRegistry.removeListener(eglListener)
+        ReturnedVideoBus.removeConsumer(streamListener)
+        client=null
         clearSurfaces()
         Log.i(TAG,"surface broker destroyed")
         super.onDestroy()
+    }
+
+    private fun publishState() {
+        val target=client ?: return
+        val eglReady=SharedEglContextRegistry.current!=null
+        val streamReady=ReturnedVideoBus.isStreamAvailable
+        val ready=eglReady && streamReady
+        try {
+            val message=Message.obtain(null,MSG_STATE)
+            message.data=Bundle().apply {
+                putBoolean(KEY_READY,ready)
+                putBoolean(KEY_EGL_READY,eglReady)
+                putBoolean(KEY_STREAM_READY,streamReady)
+            }
+            target.send(message)
+            Log.i(TAG,"broker state ready="+ready+" egl="+eglReady+" stream="+streamReady)
+        } catch(t:Throwable) {
+            Log.w(TAG,"failed to publish broker state",t)
+            client=null
+        }
     }
 
     private fun isAllowedSender(uid:Int):Boolean {
@@ -104,6 +151,7 @@ class RootLabSurfaceBrokerService:Service() {
         Log.i(TAG,"received "+surfaces.size+" target surface(s)")
         SharedEglContextRegistry.current?.let { attachPending(it) }
             ?: Log.i(TAG,"waiting for WebRTC EGL context before attach")
+        publishState()
     }
 
     private fun attachPending(context:EglBase.Context) {

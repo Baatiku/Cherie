@@ -9,6 +9,12 @@ val rootLabEnabled = providers.gradleProperty("omnilive.rootLab")
     ?.equals("true",ignoreCase=true)
     ?: false
 
+val buildCommit = providers.environmentVariable("OMNILIVE_BUILD_SHA")
+    .orElse(providers.environmentVariable("RENDER_GIT_COMMIT"))
+    .orElse(providers.gradleProperty("omnilive.gitSha"))
+    .orNull
+    ?: "dev"
+
 android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -21,10 +27,11 @@ android {
         applicationId = "com.baatiku.omnilive"
         minSdk = 26
         targetSdk = 35
-        versionCode = 5
-        versionName = "0.5.0"
+        versionCode = 6
+        versionName = "0.6.0"
         buildConfigField("String", "DEFAULT_BACKEND_URL", "\"http://10.0.2.2:8000\"")
         buildConfigField("boolean", "ROOT_LAB_ENABLED", rootLabEnabled.toString())
+        buildConfigField("String", "BUILD_COMMIT", "\"${buildCommit.replace("\"", "")}\"")
     }
 
     buildFeatures {
@@ -41,6 +48,7 @@ android {
 
 dependencies {
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
     if(rootLabEnabled) {
         implementation(project(":rootlab"))
     }

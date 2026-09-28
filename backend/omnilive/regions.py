@@ -100,12 +100,14 @@ class LandmarkRegionTracker:
         self.region: Region | None = None
         self.confidence = 0.0
         self.landmarks: np.ndarray | None = None
+        self.last_transform: np.ndarray | None = None
         self._previous_gray: np.ndarray | None = None
 
     def reset(self) -> None:
         self.region = None
         self.confidence = 0.0
         self.landmarks = None
+        self.last_transform = None
         self._previous_gray = None
 
     def _seed_points(self, gray: np.ndarray, region: Region) -> np.ndarray | None:
@@ -132,6 +134,7 @@ class LandmarkRegionTracker:
         self.region = clamped
         self._previous_gray = gray
         self.landmarks = self._seed_points(gray, clamped)
+        self.last_transform = None
         count = 0 if self.landmarks is None else len(self.landmarks)
         self.confidence = min(1.0, count / float(max(self.min_points, 12)))
         return clamped
@@ -192,6 +195,7 @@ class LandmarkRegionTracker:
         kept = good_new.reshape(-1, 1, 2).astype(np.float32)
         self.region = updated
         self.landmarks = kept
+        self.last_transform = transform.astype(np.float32)
         self._previous_gray = gray
         inlier_ratio = float(np.mean(inliers)) if inliers is not None and len(inliers) else 1.0
         point_ratio = min(1.0, len(kept) / float(max(self.min_points, 12)))

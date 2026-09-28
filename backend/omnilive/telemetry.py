@@ -59,6 +59,9 @@ class PipelineHealth:
         self._state = {
             "detector_backend": "uninitialized",
             "tracker_backend": "uninitialized",
+            "landmark_backend": "none",
+            "landmark_points": 0,
+            "face_alignment_enabled": False,
             "active_processor_streams": 0,
             "processed_region_width": 0,
             "processed_region_height": 0,
@@ -82,6 +85,7 @@ input_age_window = LatencyWindow()
 processor_window = LatencyWindow()
 detector_window = LatencyWindow()
 tracker_window = LatencyWindow()
+landmark_window = LatencyWindow()
 model_window = LatencyWindow()
 compositor_window = LatencyWindow()
 

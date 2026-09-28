@@ -5,3 +5,4 @@ dependencyResolutionManagement {
 }
 rootProject.name = "OmniLive"
 include(":app")
+include(":rootlab")

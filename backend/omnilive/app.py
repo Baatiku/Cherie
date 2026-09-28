@@ -42,6 +42,7 @@ from .telemetry import (
     landmark_window,
     media_wait_window,
     model_window,
+    model_recovery_skip_counter,
     overload_event_counter,
     pipeline_health,
     processor_window,
@@ -306,6 +307,7 @@ def telemetry_payload():
         "frame_correlation_drops": frame_correlation_drop_counter.value,
         "frame_correlation_out_of_order": frame_correlation_out_of_order_counter.value,
         "frame_timing_publish_drops": frame_timing_publish_drop_counter.value,
+        "model_recovery_skips": model_recovery_skip_counter.value,
         "stages": {
             "input_wait": _window_payload(media_wait_window),
             "input_age": _window_payload(input_age_window),
@@ -323,6 +325,8 @@ def telemetry_payload():
 
 
 def _health_state(payload: dict) -> tuple[bool, str]:
+    if payload.get("configured") and payload.get("recovering"):
+        return False, "model_recovering"
     if payload.get("configured") and not payload.get("loaded"):
         return False, "model_unavailable"
     return True, "ok"
@@ -358,6 +362,12 @@ def prometheus_payload() -> str:
         _metric_line("omnilive_dropped_inference_frames_total", payload["dropped_inference_frames"]),
         "# TYPE omnilive_inference_errors_total counter",
         _metric_line("omnilive_inference_errors_total", payload["inference_errors"]),
+        "# TYPE omnilive_model_recovery_skips_total counter",
+        _metric_line("omnilive_model_recovery_skips_total", payload["model_recovery_skips"]),
+        "# TYPE omnilive_model_recovering gauge",
+        _metric_line("omnilive_model_recovering", 1 if payload.get("recovering") else 0),
+        "# TYPE omnilive_model_recovery_count counter",
+        _metric_line("omnilive_model_recovery_count", payload.get("recovery_count", 0)),
         "# TYPE omnilive_overload_events_total counter",
         _metric_line("omnilive_overload_events_total", payload["overload_events"]),
         "# TYPE omnilive_frame_correlations_total counter",

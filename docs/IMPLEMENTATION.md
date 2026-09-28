@@ -49,6 +49,8 @@
 - [x] ONNX Runtime GPU dependency in Modal image
 - [x] CPU ONNX runtime for local/CI tests
 - [x] TensorRT/CUDA/CPU provider selection
+- [x] GPU execution-provider quarantine/reload with alternate-provider failover and bounded recovery cooldown
+- [x] recovery telemetry plus frame-level inference suppression/cache reuse while the model runtime is cooling down
 - [x] lazy model cache + L4 startup preload for visual model and available face/landmark runtimes
 - [x] generic NCHW/NHWC image-to-image adapter
 - [x] built-in effects
@@ -88,7 +90,8 @@ The rooted lab phase remains isolated from transport/model code. The generic out
 ## Phase 5 — hardening
 - [x] Android battery/charging/temperature and thermal-state telemetry
 - [ ] measured thermal-driven quality policy
-- [ ] GPU worker retry/reallocation
+- [x] ONNX provider-level failure recovery/quarantine with controlled retry cooldown
+- [ ] Modal GPU worker retry/reallocation after worker/container loss
 - [x] Prometheus-format backend metrics export
 - [ ] metrics dashboard
 - [ ] 30-minute end-to-end soak test
@@ -97,14 +100,20 @@ The rooted lab phase remains isolated from transport/model code. The generic out
 
 ## Current build/install checkpoint
 
-- [x] private-repo Render Free build executor connected directly to `Baatiku/Cherie:main`
+- [x] private-repo Render Free APK builder connected directly to `Baatiku/Cherie:main`
+- [x] dedicated Render Free backend-CI runner executes the CPU backend test suite
 - [x] AndroidX enabled for the Android project
 - [x] OkHttp pinned to a compileSdk 35-compatible release
 - [x] Java/Kotlin JVM targets aligned to Java 17 in app and rootlab modules
 - [x] JUnit configured for app and rootlab unit tests
-- [x] Render build passed `:app:testDebugUnitTest :rootlab:testDebugUnitTest :app:assembleDebug`
-- [x] install-test APK generated as `omnilive-debug.apk`
-- [x] generated APK SHA-256: `a6c6af3343548d25c774d7a3ca17b5e39cb3babf88b538b6a6742cce1e3455b5`
+- [x] Android device preflight shows app/build/device/API/camera/rootlab state and can copy diagnostics
+- [x] Android backend preflight calls `/health` before attempting a live session
+- [x] debug-only cleartext traffic support retained for local HTTP development endpoints
+- [x] release/default backend URL is build-configurable with `OMNILIVE_DEFAULT_BACKEND_URL`
+- [x] latest Render build passed `:app:testDebugUnitTest :rootlab:testDebugUnitTest :app:assembleDebug`
+- [x] latest install-test APK generated from source commit `9663b24fcb5a06436506f4a73bb73013cb267d1a`
+- [x] latest APK SHA-256: `c33406549985b4cca7229363b14576d0390590a96bf57420a538796cc5c56f5b`
+- [x] backend CI passed 49 tests on the same source commit (one upstream Starlette/TestClient deprecation warning remains)
 
 ## Current external gates
 

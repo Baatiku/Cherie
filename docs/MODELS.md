@@ -42,9 +42,19 @@ Provider preference is:
 2. CUDAExecutionProvider
 3. CPUExecutionProvider
 
-CPU fallback remains intentional for local tests and CI.
+A CPU-only environment such as local development or Render CI still loads CPUExecutionProvider normally. On a GPU worker, execution-provider failures are treated separately from model/input errors: a failing TensorRT/CUDA provider is temporarily quarantined, the ONNX session is discarded, and OmniLive immediately tries the next healthy configured provider. CPU fallback after a GPU-provider failure is opt-in so production does not silently hide a broken GPU path.
 
-The runtime now reports load time, input shape/type, active providers, process RSS, system memory, and GPU memory/name when `nvidia-smi` is available.
+Recovery controls:
+
+```text
+OMNILIVE_MODEL_ALLOW_CPU_FALLBACK=false
+OMNILIVE_MODEL_RETRY_COOLDOWN_SECONDS=1.5
+OMNILIVE_MODEL_PROVIDER_QUARANTINE_SECONDS=30
+```
+
+If the alternate-provider recovery also fails, the runtime enters the retry cooldown. During that cooldown the live processor does not hammer ONNX on every neural slot: it reuses a still-valid cached transform when possible and otherwise returns the untouched frame.
+
+Runtime status/telemetry exposes the active providers, quarantined providers, execution-failure count, recovery count, consecutive failures, cooldown remaining, recovery state, load time, input shape/type, process RSS, system memory, and GPU memory/name when `nvidia-smi` is available.
 
 ## Face detector and landmark providers
 

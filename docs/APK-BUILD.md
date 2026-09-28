@@ -55,3 +55,43 @@ a6c6af3343548d25c774d7a3ca17b5e39cb3babf88b538b6a6742cce1e3455b5
 ```
 
 The Render service is a build/artifact host only. It is not the OmniLive realtime backend.
+
+
+## Latest verified diagnostic build
+
+The current install-test build was produced from:
+
+```text
+9663b24fcb5a06436506f4a73bb73013cb267d1a
+```
+
+It includes the Android 0.6.0 device/backend preflight UI, build identity, camera-permission diagnostics, reference-image status, debug-only local HTTP support, and a build-configurable default backend URL.
+
+The build passed:
+
+```text
+:app:testDebugUnitTest
+:rootlab:testDebugUnitTest
+:app:assembleDebug
+BUILD SUCCESSFUL
+```
+
+Current APK SHA-256:
+
+```text
+c33406549985b4cca7229363b14576d0390590a96bf57420a538796cc5c56f5b
+```
+
+Artifact URL:
+
+```text
+https://omnilive-apk-builder.onrender.com/omnilive-debug.apk
+```
+
+To embed a deployed HTTPS backend into a future APK build, set:
+
+```text
+OMNILIVE_DEFAULT_BACKEND_URL=https://<backend-host>
+```
+
+If it is unset, the debug/development fallback remains `http://10.0.2.2:8000`; users can also edit the Backend URL directly in the app before starting a session.

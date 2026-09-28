@@ -46,3 +46,26 @@ def test_session_stores_reference_image_in_worker_local_state():
     assert registry.discard(created.session_id) is True
     assert registry.get_reference_image(created.session_id) is None
     assert registry.discard(created.session_id) is False
+
+
+def test_session_validate_and_delete_require_bearer_token():
+    created=client.post("/v1/sessions",json={"profile":"balanced","effect":"original"}).json()
+    sid=created["session_id"]
+    headers={"Authorization":"Bearer "+created["token"]}
+
+    missing=client.get(f"/v1/sessions/{sid}/validate")
+    assert missing.status_code==401
+
+    validated=client.get(f"/v1/sessions/{sid}/validate",headers=headers)
+    assert validated.status_code==200
+    payload=validated.json()
+    assert payload["ok"] is True
+    assert payload["session_id"]==sid
+    assert payload["profile"]=="balanced"
+
+    deleted=client.delete(f"/v1/sessions/{sid}",headers=headers)
+    assert deleted.status_code==200
+    assert deleted.json()["ok"] is True
+
+    expired=client.get(f"/v1/sessions/{sid}/validate",headers=headers)
+    assert expired.status_code==401

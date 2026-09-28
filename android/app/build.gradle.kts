@@ -48,6 +48,7 @@ android {
     sourceSets {
         if(rootLabEnabled) {
             getByName("main").java.srcDir("src/rootlab/java")
+            getByName("main").resources.srcDir("src/rootlab/resources")
         }
     }
 }
@@ -57,6 +58,7 @@ dependencies {
     testImplementation("org.json:json:20240303")
     if(rootLabEnabled) {
         implementation(project(":rootlab"))
+        compileOnly("io.github.libxposed:api:102.0.0")
     }
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.activity:activity-compose:1.10.0")

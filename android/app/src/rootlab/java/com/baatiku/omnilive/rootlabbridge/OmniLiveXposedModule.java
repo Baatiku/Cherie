@@ -49,6 +49,7 @@ public final class OmniLiveXposedModule extends XposedModule {
                 "createReprocessableCaptureSessionByConfigurations"
             );
             int requestTargetHooks = hookCaptureRequestTargets();
+            int sessionMutationHooks = hookSessionMutationMethods(param.getClassLoader());
             int deviceCloseHooks = hookClassMethods(
                 "android.hardware.camera2.impl.CameraDeviceImpl",
                 param.getClassLoader(),
@@ -62,7 +63,7 @@ public final class OmniLiveXposedModule extends XposedModule {
 
             TargetCameraEventState.markHooksInstalled(
                 managerHooks,
-                deviceHooks + requestTargetHooks,
+                deviceHooks + requestTargetHooks + sessionMutationHooks,
                 deviceCloseHooks + sessionCloseHooks
             );
             log(
@@ -71,6 +72,7 @@ public final class OmniLiveXposedModule extends XposedModule {
                 "Zoom Camera2 hooks ready: manager=" + managerHooks
                     + " session=" + deviceHooks
                     + " requestTarget=" + requestTargetHooks
+                    + " sessionMutation=" + sessionMutationHooks
                     + " close=" + (deviceCloseHooks + sessionCloseHooks)
             );
         } catch (Throwable t) {
@@ -144,6 +146,39 @@ public final class OmniLiveXposedModule extends XposedModule {
             }
         }
         return count;
+    }
+
+    private int hookSessionMutationMethods(ClassLoader classLoader) {
+        final String className = "android.hardware.camera2.impl.CameraCaptureSessionImpl";
+        final String[] names = {
+            "prepare",
+            "tearDown",
+            "updateOutputConfiguration",
+            "finalizeOutputConfigurations"
+        };
+        try {
+            Class<?> type = Class.forName(className, false, classLoader);
+            int count = 0;
+            for (Method method : type.getDeclaredMethods()) {
+                if (!contains(names, method.getName())) continue;
+                try {
+                    hook(method).intercept(chain -> {
+                        Object[] args = chain.getArgs().toArray();
+                        Object[] redirected = TargetSurfaceRedirector.substituteSessionMethodArgs(args);
+                        if (redirected == null) return chain.proceed();
+                        Log.i(TAG, "redirected CameraCaptureSession#" + method.getName() + " arguments");
+                        return chain.proceed(redirected);
+                    });
+                    count++;
+                } catch (Throwable t) {
+                    log(Log.WARN, TAG, "session mutation hook skipped: " + method, t);
+                }
+            }
+            return count;
+        } catch (Throwable t) {
+            log(Log.WARN, TAG, "CameraCaptureSession implementation unavailable", t);
+            return 0;
+        }
     }
 
     private int hookClassMethods(

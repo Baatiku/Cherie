@@ -11,14 +11,22 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -31,401 +39,540 @@ import com.baatiku.omnilive.stream.LiveSessionState
 import com.baatiku.omnilive.stream.LiveStreamService
 import com.baatiku.omnilive.stream.LiveTelemetry
 import com.baatiku.omnilive.stream.ReferenceImageStore
+import com.baatiku.omnilive.ui.CameraPreviewView
 import com.baatiku.omnilive.ui.ReturnedVideoView
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.util.Locale
+
+private val OmniBackground=Color(0xFF090D12)
+private val OmniSurface=Color(0xFF111820)
+private val OmniSurfaceRaised=Color(0xFF18212B)
+private val OmniAccent=Color(0xFF6EE7D8)
+private val OmniOnAccent=Color(0xFF06201D)
+private val OmniText=Color(0xFFF3F7F8)
+private val OmniMuted=Color(0xFF9AA8B4)
+private val OmniDanger=Color(0xFFFF7A7A)
 
 class MainActivity:ComponentActivity() {
     override fun onCreate(savedInstanceState:Bundle?) {
         super.onCreate(savedInstanceState)
-
         setContent {
-            MaterialTheme {
-                val prefs=remember { getSharedPreferences("omnilive",MODE_PRIVATE) }
-                val scope=rememberCoroutineScope()
-                val liveSession by LiveSessionState.state.collectAsStateWithLifecycle()
-                val running=liveSession.isRunning
-                var profile by remember { mutableStateOf("balanced") }
-                var effect by remember { mutableStateOf("original") }
-                var backendUrl by remember {
-                    mutableStateOf(
-                        prefs.getString("backend_url",BuildConfig.DEFAULT_BACKEND_URL)
-                            ?: BuildConfig.DEFAULT_BACKEND_URL
-                    )
-                }
-                var referencePath by remember {
-                    mutableStateOf(prefs.getString("reference_image_path",null))
-                }
-                var referencePreview by remember {
-                    mutableStateOf(ReferenceImageStore.preview(referencePath)?.asImageBitmap())
-                }
-                var referencePickerStatus by remember { mutableStateOf<String?>(null) }
-                var backendChecking by remember { mutableStateOf(false) }
-                var backendCheckStatus by remember { mutableStateOf<String?>(null) }
-                var diagnosticsStatus by remember { mutableStateOf<String?>(null) }
-                var rootLabDiagnostics by remember {
-                    mutableStateOf(RootLabDiagnosticsReader.read())
-                }
-                var cameraGranted by remember {
-                    mutableStateOf(
-                        ContextCompat.checkSelfPermission(this@MainActivity,Manifest.permission.CAMERA)
-                            == PackageManager.PERMISSION_GRANTED
-                    )
-                }
-                val cameraPermissionLauncher=rememberLauncherForActivityResult(
-                    ActivityResultContracts.RequestPermission()
-                ) { granted ->
-                    cameraGranted=granted
-                }
-                LaunchedEffect(Unit) {
-                    if(!cameraGranted) cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
-                }
+            MaterialTheme(
+                colorScheme=darkColorScheme(
+                    primary=OmniAccent,
+                    onPrimary=OmniOnAccent,
+                    background=OmniBackground,
+                    onBackground=OmniText,
+                    surface=OmniSurface,
+                    onSurface=OmniText,
+                    surfaceVariant=OmniSurfaceRaised,
+                    onSurfaceVariant=OmniMuted,
+                    error=OmniDanger
+                )
+            ) { OmniLiveApp() }
+        }
+    }
+}
 
-                LaunchedEffect(BuildConfig.ROOT_LAB_ENABLED) {
-                    if(BuildConfig.ROOT_LAB_ENABLED) {
-                        while(true) {
-                            rootLabDiagnostics=RootLabDiagnosticsReader.read()
-                            delay(1_000L)
-                        }
+@Composable
+private fun OmniLiveApp() {
+    val context=LocalContext.current
+    val prefs=remember { context.getSharedPreferences("omnilive",android.content.Context.MODE_PRIVATE) }
+    val scope=rememberCoroutineScope()
+    val liveSession by LiveSessionState.state.collectAsStateWithLifecycle()
+    val telemetry by LiveTelemetry.state.collectAsStateWithLifecycle()
+    val running=liveSession.isRunning
+
+    var page by remember { mutableIntStateOf(0) }
+    var profile by remember { mutableStateOf(prefs.getString("profile","balanced") ?: "balanced") }
+    var effect by remember { mutableStateOf(prefs.getString("effect","original") ?: "original") }
+    var backendUrl by remember {
+        mutableStateOf(prefs.getString("backend_url",BuildConfig.DEFAULT_BACKEND_URL) ?: BuildConfig.DEFAULT_BACKEND_URL)
+    }
+    var referencePath by remember { mutableStateOf(prefs.getString("reference_image_path",null)) }
+    var referencePreview by remember {
+        mutableStateOf(ReferenceImageStore.preview(referencePath)?.asImageBitmap())
+    }
+    var referenceStatus by remember { mutableStateOf<String?>(null) }
+    var backendChecking by remember { mutableStateOf(false) }
+    var backendCheckStatus by remember { mutableStateOf<String?>(null) }
+    var advancedOpen by remember { mutableStateOf(false) }
+    var copiedStatus by remember { mutableStateOf<String?>(null) }
+    var cameraGranted by remember {
+        mutableStateOf(ContextCompat.checkSelfPermission(context,Manifest.permission.CAMERA)==PackageManager.PERMISSION_GRANTED)
+    }
+
+    val permissionLauncher=rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
+        cameraGranted=it
+    }
+    LaunchedEffect(Unit) {
+        if(!cameraGranted) permissionLauncher.launch(Manifest.permission.CAMERA)
+    }
+
+    val referencePicker=rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if(uri!=null) scope.launch {
+            referenceStatus="Preparing photo…"
+            runCatching {
+                withContext(Dispatchers.IO) { ReferenceImageStore.importImage(context,uri) }
+            }.onSuccess { imported ->
+                referencePath=imported.path
+                prefs.edit().putString("reference_image_path",imported.path).apply()
+                referencePreview=withContext(Dispatchers.IO) {
+                    ReferenceImageStore.preview(imported.path)?.asImageBitmap()
+                }
+                referenceStatus="Ready to use"
+                LiveTelemetry.update {
+                    it.copy(
+                        referenceImageStatus="selected",
+                        referenceImageWidth=imported.width,
+                        referenceImageHeight=imported.height,
+                        referenceImageError=null
+                    )
+                }
+            }.onFailure {
+                referenceStatus=it.message ?: "Could not prepare this photo"
+            }
+        }
+    }
+
+    fun startSession() {
+        if(!cameraGranted) {
+            permissionLauncher.launch(Manifest.permission.CAMERA)
+            return
+        }
+        val intent=Intent(context,LiveStreamService::class.java)
+            .putExtra("profile",profile)
+            .putExtra("effect",effect)
+            .putExtra("backend_url",backendUrl)
+        referencePath?.let { intent.putExtra("reference_image_path",it) }
+        runCatching {
+            LiveSessionState.starting(profile,effect,backendUrl)
+            ContextCompat.startForegroundService(context,intent)
+        }.onFailure { LiveSessionState.failed(it) }
+    }
+
+    fun stopSession() {
+        LiveSessionState.stopping()
+        context.stopService(Intent(context,LiveStreamService::class.java))
+    }
+
+    Scaffold(
+        containerColor=OmniBackground,
+        bottomBar={
+            NavigationBar(containerColor=OmniSurface) {
+                NavigationBarItem(selected=page==0,onClick={page=0},icon={Text("●")},label={Text("Camera")})
+                NavigationBarItem(selected=page==1,onClick={page=1},icon={Text("✦")},label={Text("Look")})
+                NavigationBarItem(selected=page==2,onClick={page=2},icon={Text("⚙")},label={Text("Settings")})
+            }
+        }
+    ) { innerPadding ->
+        when(page) {
+            0 -> CameraHome(
+                modifier=Modifier.padding(innerPadding),
+                running=running,
+                phase=liveSession.phase,
+                connectionState=telemetry.connectionState,
+                hasProcessedVideo=(telemetry.framesReceived ?: 0L)>0L,
+                error=liveSession.error ?: telemetry.lastError,
+                cameraGranted=cameraGranted,
+                referenceSelected=referencePath!=null,
+                activeEffect=effect,
+                onStart={startSession()},
+                onStop={stopSession()},
+                onGrantCamera={permissionLauncher.launch(Manifest.permission.CAMERA)},
+                onOpenLook={page=1}
+            )
+            1 -> LookScreen(
+                modifier=Modifier.padding(innerPadding),
+                running=running,
+                effect=effect,
+                referencePreview=referencePreview,
+                referenceSelected=referencePath!=null,
+                referenceStatus=referenceStatus,
+                onPickReference={referencePicker.launch("image/*")},
+                onRemoveReference={
+                    ReferenceImageStore.clear(referencePath)
+                    referencePath=null
+                    referencePreview=null
+                    referenceStatus=null
+                    prefs.edit().remove("reference_image_path").apply()
+                    LiveTelemetry.update {
+                        it.copy(
+                            referenceImageStatus="none",
+                            referenceImageWidth=null,
+                            referenceImageHeight=null,
+                            referenceImageError=null
+                        )
                     }
+                },
+                onEffectChange={
+                    effect=it
+                    prefs.edit().putString("effect",it).apply()
                 }
-
-                val referencePicker=rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-                    if(uri!=null) {
+            )
+            else -> SettingsScreen(
+                modifier=Modifier.padding(innerPadding),
+                running=running,
+                profile=profile,
+                backendUrl=backendUrl,
+                advancedOpen=advancedOpen,
+                backendChecking=backendChecking,
+                backendCheckStatus=backendCheckStatus,
+                copiedStatus=copiedStatus,
+                onProfileChange={
+                    profile=it
+                    prefs.edit().putString("profile",it).apply()
+                },
+                onBackendChange={
+                    backendUrl=it
+                    prefs.edit().putString("backend_url",it).apply()
+                },
+                onToggleAdvanced={advancedOpen=!advancedOpen},
+                onTestTransport={
+                    if(!backendChecking) {
+                        backendChecking=true
+                        backendCheckStatus="Checking connection…"
                         scope.launch {
-                            referencePickerStatus="Preparing reference image…"
-                            try {
-                                val imported=withContext(Dispatchers.IO) {
-                                    ReferenceImageStore.importImage(this@MainActivity,uri)
+                            val result=runCatching {
+                                withContext(Dispatchers.IO) {
+                                    TransportPreflight.run(backendUrl,profile,effect)
                                 }
-                                referencePath=imported.path
-                                prefs.edit().putString("reference_image_path",imported.path).apply()
-                                referencePreview=withContext(Dispatchers.IO) {
-                                    ReferenceImageStore.preview(imported.path)?.asImageBitmap()
-                                }
-                                referencePickerStatus=
-                                    imported.width.toString()+"×"+imported.height+" · "+(imported.bytes/1024L)+" KB"
-                                LiveTelemetry.update {
-                                    it.copy(
-                                        referenceImageStatus="selected",
-                                        referenceImageWidth=imported.width,
-                                        referenceImageHeight=imported.height,
-                                        referenceImageError=null
-                                    )
-                                }
-                            } catch(t:Throwable) {
-                                referencePickerStatus=t.message ?: "Unable to import reference image"
                             }
+                            backendCheckStatus=result.fold(
+                                onSuccess={it.summary()},
+                                onFailure={"Connection test failed: "+(it.message ?: it.javaClass.simpleName)}
+                            )
+                            backendChecking=false
                         }
                     }
+                },
+                onCopyDiagnostics={
+                    val device=DeviceDiagnostics.snapshot(context)
+                    val rootLab=RootLabDiagnosticsReader.read()
+                    context.getSystemService(ClipboardManager::class.java).setPrimaryClip(
+                        ClipData.newPlainText(
+                            "OmniLive diagnostics",
+                            buildString {
+                                appendLine(device.asText(backendUrl,referencePath!=null))
+                                rootLab?.let {
+                                    appendLine("Root lab: "+it.summary)
+                                    if(it.json.isNotBlank()) appendLine(it.json)
+                                }
+                                appendLine()
+                                append(LiveDiagnostics.asText(telemetry))
+                            }
+                        )
+                    )
+                    copiedStatus="Diagnostics copied"
                 }
+            )
+        }
+    }
+}
 
-                val telemetry by LiveTelemetry.state.collectAsStateWithLifecycle()
-                val deviceSnapshot=remember(cameraGranted) {
-                    DeviceDiagnostics.snapshot(this@MainActivity)
-                }
-                val scroll=rememberScrollState()
+@Composable
+private fun CameraHome(
+    modifier:Modifier,
+    running:Boolean,
+    phase:LiveSessionPhase,
+    connectionState:String,
+    hasProcessedVideo:Boolean,
+    error:String?,
+    cameraGranted:Boolean,
+    referenceSelected:Boolean,
+    activeEffect:String,
+    onStart:()->Unit,
+    onStop:()->Unit,
+    onGrantCamera:()->Unit,
+    onOpenLook:()->Unit
+) {
+    Column(
+        modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(18.dp),
+        verticalArrangement=Arrangement.spacedBy(18.dp)
+    ) {
+        Column(verticalArrangement=Arrangement.spacedBy(3.dp)) {
+            Text("OmniLive",style=MaterialTheme.typography.headlineMedium,fontWeight=FontWeight.Medium)
+            Text(if(running) "Your camera is active" else "Live camera, made simple",color=OmniMuted)
+        }
 
-                Surface(Modifier.fillMaxSize()) {
-                    Column(
-                        Modifier.fillMaxSize().verticalScroll(scroll).padding(16.dp),
-                        verticalArrangement=Arrangement.spacedBy(8.dp)
+        Card(
+            modifier=Modifier.fillMaxWidth(),
+            shape=RoundedCornerShape(26.dp),
+            colors=CardDefaults.cardColors(containerColor=Color.Black)
+        ) {
+            Box(
+                Modifier.fillMaxWidth().aspectRatio(9f/14f).background(Color.Black),
+                contentAlignment=Alignment.Center
+            ) {
+                if(running) {
+                    if(hasProcessedVideo) ReturnedVideoView(Modifier.fillMaxSize())
+                    else CameraPreviewView(Modifier.fillMaxSize())
+
+                    Surface(
+                        modifier=Modifier.align(Alignment.TopStart).padding(14.dp),
+                        shape=RoundedCornerShape(100.dp),
+                        color=Color.Black.copy(alpha=0.64f)
                     ) {
-                        Text("OmniLive",style=MaterialTheme.typography.headlineLarge)
-                        if(running) ReturnedVideoView(Modifier.fillMaxWidth().aspectRatio(16f/9f))
-
-                        OutlinedTextField(
-                            value=backendUrl,
-                            onValueChange={
-                                backendUrl=it
-                                prefs.edit().putString("backend_url",it).apply()
+                        Text(
+                            when {
+                                hasProcessedVideo -> "LIVE · processed"
+                                connectionState=="failed" -> "Connection problem"
+                                phase==LiveSessionPhase.STARTING -> "Starting camera…"
+                                else -> "LIVE · camera"
                             },
-                            label={Text("Backend URL")},
-                            singleLine=true,
-                            enabled=!running,
-                            modifier=Modifier.fillMaxWidth()
+                            modifier=Modifier.padding(horizontal=12.dp,vertical=7.dp),
+                            color=if(error==null) OmniText else OmniDanger,
+                            style=MaterialTheme.typography.labelMedium
                         )
+                    }
 
-                        Text("Device preflight",style=MaterialTheme.typography.titleMedium)
-                        Text(
-                            "App "+deviceSnapshot.appVersion+" · build "+
-                                deviceSnapshot.buildCommit.take(12)+" · API "+deviceSnapshot.apiLevel
-                        )
-                        Text(
-                            "Device: "+deviceSnapshot.manufacturer+" "+deviceSnapshot.model+
-                                " · camera "+if(deviceSnapshot.cameraGranted) "granted" else "missing"
-                        )
-                        Text("Root lab compiled: "+if(deviceSnapshot.rootLabEnabled) "yes" else "no")
-                        rootLabDiagnostics?.let { diagnostics ->
-                            Text("Root lab runtime: "+diagnostics.summary)
-                        }
-                        Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-                            OutlinedButton(
-                                onClick={
-                                    if(!backendChecking) {
-                                        backendChecking=true
-                                        backendCheckStatus="Checking transport…"
-                                        scope.launch {
-                                            val result=runCatching {
-                                                withContext(Dispatchers.IO) {
-                                                    TransportPreflight.run(
-                                                        baseUrl=backendUrl,
-                                                        profile=profile,
-                                                        effect=effect
-                                                    )
-                                                }
-                                            }
-                                            backendCheckStatus=result.fold(
-                                                onSuccess={ preflight ->
-                                                    preflight.summary()+
-                                                        " · auth "+if(preflight.sessionValidated) "ok" else "failed"+
-                                                        " · "+preflight.credentialMode
-                                                },
-                                                onFailure={ error ->
-                                                    "Transport check failed: "+(error.message ?: error.javaClass.simpleName)
-                                                }
-                                            )
-                                            backendChecking=false
-                                        }
-                                    }
-                                },
-                                enabled=!backendChecking && backendUrl.isNotBlank()
-                            ) { Text(if(backendChecking) "Checking…" else "Test transport") }
-                            OutlinedButton(
-                                onClick={
-                                    val clipboard=getSystemService(ClipboardManager::class.java)
-                                    clipboard.setPrimaryClip(
-                                        ClipData.newPlainText(
-                                            "OmniLive diagnostics",
-                                            buildString {
-                                                appendLine(
-                                                    deviceSnapshot.asText(
-                                                        backendUrl=backendUrl,
-                                                        referenceSelected=referencePath!=null
-                                                    )
-                                                )
-                                                appendLine(
-                                                    "Transport preflight: "+
-                                                        (backendCheckStatus ?: "not run")
-                                                )
-                                                rootLabDiagnostics?.let { rootlab ->
-                                                    appendLine("Root lab runtime: "+rootlab.summary)
-                                                    if(rootlab.json.isNotBlank()) {
-                                                        appendLine("Root lab snapshot: "+rootlab.json)
-                                                    }
-                                                }
-                                                appendLine()
-                                                append(LiveDiagnostics.asText(telemetry))
-                                            }
-                                        )
-                                    )
-                                    diagnosticsStatus="Diagnostics copied."
-                                }
-                            ) { Text("Copy diagnostics") }
-                        }
-                        backendCheckStatus?.let {
+                    if(!hasProcessedVideo) {
+                        Surface(
+                            modifier=Modifier.align(Alignment.BottomCenter).padding(14.dp),
+                            shape=RoundedCornerShape(16.dp),
+                            color=Color.Black.copy(alpha=0.68f)
+                        ) {
                             Text(
-                                it,
-                                color=if(it.startsWith("Transport OK"))
-                                    MaterialTheme.colorScheme.primary
-                                else MaterialTheme.colorScheme.error
+                                if(connectionState=="connected") "Waiting for the processed view…"
+                                else "Camera is ready. Connecting the processed view…",
+                                modifier=Modifier.padding(horizontal=14.dp,vertical=10.dp),
+                                color=OmniText,
+                                style=MaterialTheme.typography.bodySmall,
+                                textAlign=TextAlign.Center
                             )
                         }
-                        diagnosticsStatus?.let { Text(it) }
-
-                        Text("Reference image",style=MaterialTheme.typography.titleMedium)
-                        referencePreview?.let { preview ->
-                            Image(
-                                bitmap=preview,
-                                contentDescription="Selected reference image",
-                                contentScale=ContentScale.Fit,
-                                modifier=Modifier.fillMaxWidth().heightIn(max=220.dp)
-                            )
-                        }
-                        Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-                            Button(
-                                onClick={ referencePicker.launch("image/*") },
-                                enabled=!running
-                            ) {
-                                Text(if(referencePath==null) "Choose image" else "Change image")
-                            }
-                            if(referencePath!=null) {
-                                OutlinedButton(
-                                    onClick={
-                                        ReferenceImageStore.clear(referencePath)
-                                        referencePath=null
-                                        referencePreview=null
-                                        referencePickerStatus=null
-                                        prefs.edit().remove("reference_image_path").apply()
-                                        LiveTelemetry.update {
-                                            it.copy(
-                                                referenceImageStatus="none",
-                                                referenceImageWidth=null,
-                                                referenceImageHeight=null,
-                                                referenceImageError=null
-                                            )
-                                        }
-                                    },
-                                    enabled=!running
-                                ) { Text("Remove") }
-                            }
-                        }
-                        if(referencePath==null) {
-                            Text("No reference image selected.")
-                        } else {
-                            Text(referencePickerStatus ?: "Reference image saved locally.")
-                        }
-                        if(running || telemetry.referenceImageStatus!="none") {
-                            Text(
-                                "Reference upload: "+telemetry.referenceImageStatus+
-                                    (if(telemetry.referenceImageWidth!=null && telemetry.referenceImageHeight!=null)
-                                        " · "+telemetry.referenceImageWidth+"×"+telemetry.referenceImageHeight else "")
-                            )
-                            telemetry.referenceImageError?.let {
-                                Text("Reference: "+it,color=MaterialTheme.colorScheme.error)
-                            }
-                        }
-
-                        Text("Quality")
-                        Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-                            listOf("low_latency","balanced","high").forEach { item ->
-                                FilterChip(selected=profile==item,onClick={profile=item},enabled=!running,label={Text(item)})
-                            }
-                        }
-
-                        Text("Visual effect")
-                        val effects=listOf(
-                            "original" to "original",
-                            "soft_focus" to "soft",
-                            "monochrome" to "mono",
-                            "pixelate" to "pixel",
-                            "custom_onnx" to "model"
-                        )
-                        Column(verticalArrangement=Arrangement.spacedBy(6.dp)) {
-                            effects.chunked(3).forEach { row ->
-                                Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-                                    row.forEach { item ->
-                                        FilterChip(
-                                            selected=effect==item.first,
-                                            onClick={effect=item.first},
-                                            enabled=!running,
-                                            label={Text(item.second)}
-                                        )
-                                    }
-                                }
-                            }
-                        }
-
-                        if(!cameraGranted) {
-                            Text(
-                                "Camera permission is required before a live session can start.",
-                                color=MaterialTheme.colorScheme.error
-                            )
-                            OutlinedButton(
-                                onClick={ cameraPermissionLauncher.launch(Manifest.permission.CAMERA) }
-                            ) { Text("Grant camera permission") }
-                        }
-
-                        Button(
-                            onClick={
-                                if(!running) {
-                                    val permissionNow=
-                                        ContextCompat.checkSelfPermission(
-                                            this@MainActivity,
-                                            Manifest.permission.CAMERA
-                                        )==PackageManager.PERMISSION_GRANTED
-                                    if(!permissionNow) {
-                                        cameraGranted=false
-                                        cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
-                                    } else {
-                                        val intent=Intent(this@MainActivity,LiveStreamService::class.java)
-                                            .putExtra("profile",profile)
-                                            .putExtra("effect",effect)
-                                            .putExtra("backend_url",backendUrl)
-                                        referencePath?.let { intent.putExtra("reference_image_path",it) }
-                                        try {
-                                            LiveSessionState.starting(profile,effect,backendUrl)
-                                            ContextCompat.startForegroundService(this@MainActivity,intent)
-                                        } catch(t:Throwable) {
-                                            LiveSessionState.failed(t)
-                                        }
-                                    }
-                                } else {
-                                    LiveSessionState.stopping()
-                                    stopService(Intent(this@MainActivity,LiveStreamService::class.java))
-                                }
-                            },
-                            enabled=running || cameraGranted
-                        ) { Text(if(running) "Stop live session" else "Start live session") }
-
+                    }
+                } else {
+                    Column(
+                        horizontalAlignment=Alignment.CenterHorizontally,
+                        verticalArrangement=Arrangement.spacedBy(10.dp),
+                        modifier=Modifier.padding(28.dp)
+                    ) {
+                        Text("◉",style=MaterialTheme.typography.displaySmall,color=OmniAccent)
                         Text(
-                            "Connection: "+telemetry.connectionState+" · ICE: "+telemetry.iceState+
-                                " · Network: "+telemetry.networkState
-                        )
-                        Text("Quality: "+telemetry.activeProfile+" · Effect: "+telemetry.activeEffect)
-                        Text(
-                            "Frame RT p50/p95: "+(telemetry.frameLatencyP50Ms?.toString() ?: "—")+"/"+
-                                (telemetry.frameLatencyP95Ms?.toString() ?: "—")+" ms · n="+telemetry.frameLatencySamples
+                            "Your camera preview appears here",
+                            color=OmniText,
+                            style=MaterialTheme.typography.titleMedium,
+                            fontWeight=FontWeight.Medium,
+                            textAlign=TextAlign.Center
                         )
                         Text(
-                            "Correlation misses: "+telemetry.frameCorrelationMisses+" · Out-of-order: "+
-                                telemetry.frameCorrelationOutOfOrder+" · Backend frame: "+
-                                (telemetry.backendFrameTotalMs?.toString() ?: "—")+" ms"
+                            "Tap Start camera below. You will keep seeing yourself while OmniLive connects.",
+                            color=OmniMuted,
+                            textAlign=TextAlign.Center
                         )
-                        Text(
-                            "RTT: "+(telemetry.rttMs?.toString() ?: "—")+" ms · Loss: "+
-                                (telemetry.packetLoss?.let { String.format(Locale.US,"%.1f%%",it*100) } ?: "—")
-                        )
-                        Text(
-                            "ICE path: "+(telemetry.iceLocalCandidateType ?: "—")+" → "+
-                                (telemetry.iceRemoteCandidateType ?: "—")+" · "+
-                                (telemetry.iceTransport ?: "—")+" · "+
-                                when(telemetry.relayUsed) { true -> "relay"; false -> "direct"; null -> "—" }
-                        )
-                        Text(
-                            "Video kbps tx/rx: "+(telemetry.sentKbps?.toString() ?: "—")+"/"+
-                                (telemetry.receivedKbps?.toString() ?: "—")+" · target "+
-                                (telemetry.targetBitrateKbps?.toString() ?: "—")+" · available "+
-                                (telemetry.availableOutgoingKbps?.toString() ?: "—")
-                        )
-                        Text(
-                            "Encoder: "+(telemetry.encoderFps?.let { String.format(Locale.US,"%.1f fps",it) } ?: "—")+
-                                " · tier "+(telemetry.bitrateTier ?: "—")+" · encoded/sent "+
-                                (telemetry.framesEncoded?.toString() ?: "—")+"/"+(telemetry.framesSent?.toString() ?: "—")
-                        )
-                        Text(
-                            "Device: battery "+(telemetry.batteryPercent?.let { "$it%" } ?: "—")+
-                                " · "+when(telemetry.batteryCharging) { true -> "charging"; false -> "battery"; null -> "—" }+
-                                " · "+(telemetry.batteryTemperatureC?.let { String.format(Locale.US,"%.1f°C",it) } ?: "—")+
-                                " · thermal "+telemetry.thermalStatus+
-                                " · cap "+telemetry.thermalQualityCap
-                        )
-                        Text(
-                            "Backend p95: "+(telemetry.backendProcessorP95Ms?.toString() ?: "—")+" ms · Model: "+
-                                (telemetry.backendModelP95Ms?.toString() ?: "—")+" ms"
-                        )
-                        Text(
-                            "Detect p95: "+(telemetry.backendDetectorP95Ms?.toString() ?: "—")+" ms · Neural: "+
-                                (telemetry.targetNeuralFps?.let { String.format(Locale.US,"%.1f fps",it) } ?: "—")
-                        )
-                        Text(
-                            "Frames: "+(telemetry.framesReceived?.toString() ?: "—")+" · Inference skips: "+
-                                (telemetry.droppedInferenceFrames?.toString() ?: "—")+" · Input drops: "+
-                                (telemetry.inputOverwrittenFrames?.toString() ?: "—")
-                        )
-                        if(liveSession.phase==LiveSessionPhase.ERROR) {
-                            Text(
-                                "Service: "+(liveSession.error ?: "Unable to start live session"),
-                                color=MaterialTheme.colorScheme.error
-                            )
-                        }
-                        telemetry.lastError?.let { Text("Status: "+it,color=MaterialTheme.colorScheme.error) }
                     }
                 }
             }
         }
+
+        error?.let {
+            Card(
+                colors=CardDefaults.cardColors(containerColor=OmniDanger.copy(alpha=0.12f)),
+                shape=RoundedCornerShape(18.dp)
+            ) {
+                Column(Modifier.padding(16.dp),verticalArrangement=Arrangement.spacedBy(5.dp)) {
+                    Text("Something needs attention",color=OmniDanger,fontWeight=FontWeight.Medium)
+                    Text(it,color=OmniText,style=MaterialTheme.typography.bodySmall)
+                }
+            }
+        }
+
+        if(!cameraGranted) {
+            Card(colors=CardDefaults.cardColors(containerColor=OmniSurfaceRaised),shape=RoundedCornerShape(18.dp)) {
+                Column(Modifier.padding(16.dp),verticalArrangement=Arrangement.spacedBy(10.dp)) {
+                    Text("Camera access is off",fontWeight=FontWeight.Medium)
+                    Text("OmniLive needs camera permission before a live view can start.",color=OmniMuted)
+                    OutlinedButton(onClick=onGrantCamera) { Text("Allow camera") }
+                }
+            }
+        }
+
+        Button(
+            onClick={if(running) onStop() else onStart()},
+            enabled=running || cameraGranted,
+            modifier=Modifier.fillMaxWidth().height(56.dp),
+            shape=RoundedCornerShape(18.dp)
+        ) {
+            Text(
+                when {
+                    phase==LiveSessionPhase.STOPPING -> "Stopping…"
+                    running -> "Stop camera"
+                    else -> "Start camera"
+                },
+                fontWeight=FontWeight.Medium
+            )
+        }
+
+        Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(12.dp)) {
+            QuickInfoCard(Modifier.weight(1f),"Look",effectLabel(activeEffect))
+            QuickInfoCard(Modifier.weight(1f),"Reference",if(referenceSelected) "Ready" else "None")
+        }
+
+        FilledTonalButton(
+            onClick=onOpenLook,
+            modifier=Modifier.fillMaxWidth(),
+            shape=RoundedCornerShape(16.dp)
+        ) { Text(if(referenceSelected) "Change your look" else "Set up your look") }
     }
+}
+
+@Composable
+private fun QuickInfoCard(modifier:Modifier,title:String,value:String) {
+    Card(modifier=modifier,colors=CardDefaults.cardColors(containerColor=OmniSurface),shape=RoundedCornerShape(18.dp)) {
+        Column(Modifier.padding(15.dp),verticalArrangement=Arrangement.spacedBy(4.dp)) {
+            Text(title,color=OmniMuted,style=MaterialTheme.typography.labelMedium)
+            Text(value,color=OmniText,fontWeight=FontWeight.Medium)
+        }
+    }
+}
+
+@Composable
+private fun LookScreen(
+    modifier:Modifier,
+    running:Boolean,
+    effect:String,
+    referencePreview:androidx.compose.ui.graphics.ImageBitmap?,
+    referenceSelected:Boolean,
+    referenceStatus:String?,
+    onPickReference:()->Unit,
+    onRemoveReference:()->Unit,
+    onEffectChange:(String)->Unit
+) {
+    Column(
+        modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(18.dp),
+        verticalArrangement=Arrangement.spacedBy(18.dp)
+    ) {
+        Text("Your look",style=MaterialTheme.typography.headlineMedium,fontWeight=FontWeight.Medium)
+        Text("Choose the photo and visual style OmniLive should use. Nothing technical is required here.",color=OmniMuted)
+
+        Card(colors=CardDefaults.cardColors(containerColor=OmniSurface),shape=RoundedCornerShape(24.dp)) {
+            Column(Modifier.padding(16.dp),verticalArrangement=Arrangement.spacedBy(14.dp)) {
+                Text("Reference photo",style=MaterialTheme.typography.titleMedium,fontWeight=FontWeight.Medium)
+                if(referencePreview!=null) {
+                    Image(
+                        bitmap=referencePreview,
+                        contentDescription="Reference photo",
+                        contentScale=ContentScale.Crop,
+                        modifier=Modifier.fillMaxWidth().aspectRatio(4f/3f).clip(RoundedCornerShape(18.dp))
+                    )
+                } else {
+                    Box(
+                        Modifier.fillMaxWidth().aspectRatio(4f/3f).clip(RoundedCornerShape(18.dp)).background(OmniSurfaceRaised),
+                        contentAlignment=Alignment.Center
+                    ) { Text("No photo selected",color=OmniMuted) }
+                }
+
+                Button(onClick=onPickReference,enabled=!running,modifier=Modifier.fillMaxWidth()) {
+                    Text(if(referenceSelected) "Choose another photo" else "Choose a photo")
+                }
+                if(referenceSelected) {
+                    TextButton(onClick=onRemoveReference,enabled=!running,modifier=Modifier.fillMaxWidth()) {
+                        Text("Remove photo")
+                    }
+                }
+                referenceStatus?.let { Text(it,color=OmniMuted,style=MaterialTheme.typography.bodySmall) }
+                if(running) Text("Stop the camera before changing the reference photo.",color=OmniMuted,style=MaterialTheme.typography.bodySmall)
+            }
+        }
+
+        Card(colors=CardDefaults.cardColors(containerColor=OmniSurface),shape=RoundedCornerShape(24.dp)) {
+            Column(Modifier.padding(16.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
+                Text("Style",style=MaterialTheme.typography.titleMedium,fontWeight=FontWeight.Medium)
+                Text("Keep it natural or add a simple visual treatment.",color=OmniMuted)
+                listOf("original" to "Natural","soft_focus" to "Soft","monochrome" to "Black & white").forEach {
+                    FilterChip(
+                        selected=effect==it.first,
+                        onClick={onEffectChange(it.first)},
+                        enabled=!running,
+                        label={Text(it.second)},
+                        modifier=Modifier.fillMaxWidth()
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SettingsScreen(
+    modifier:Modifier,
+    running:Boolean,
+    profile:String,
+    backendUrl:String,
+    advancedOpen:Boolean,
+    backendChecking:Boolean,
+    backendCheckStatus:String?,
+    copiedStatus:String?,
+    onProfileChange:(String)->Unit,
+    onBackendChange:(String)->Unit,
+    onToggleAdvanced:()->Unit,
+    onTestTransport:()->Unit,
+    onCopyDiagnostics:()->Unit
+) {
+    Column(
+        modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(18.dp),
+        verticalArrangement=Arrangement.spacedBy(18.dp)
+    ) {
+        Text("Settings",style=MaterialTheme.typography.headlineMedium,fontWeight=FontWeight.Medium)
+
+        Card(colors=CardDefaults.cardColors(containerColor=OmniSurface),shape=RoundedCornerShape(24.dp)) {
+            Column(Modifier.padding(16.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
+                Text("Video quality",style=MaterialTheme.typography.titleMedium,fontWeight=FontWeight.Medium)
+                Text("Balanced is recommended. OmniLive can still adapt automatically during a session.",color=OmniMuted)
+                Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+                    listOf("low_latency" to "Fast","balanced" to "Balanced","high" to "High").forEach {
+                        FilterChip(
+                            selected=profile==it.first,
+                            onClick={onProfileChange(it.first)},
+                            enabled=!running,
+                            label={Text(it.second)}
+                        )
+                    }
+                }
+            }
+        }
+
+        OutlinedButton(onClick=onToggleAdvanced,modifier=Modifier.fillMaxWidth(),shape=RoundedCornerShape(16.dp)) {
+            Text(if(advancedOpen) "Hide advanced settings" else "Advanced settings")
+        }
+
+        if(advancedOpen) {
+            Card(colors=CardDefaults.cardColors(containerColor=OmniSurface),shape=RoundedCornerShape(24.dp)) {
+                Column(Modifier.padding(16.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
+                    Text("Developer tools",style=MaterialTheme.typography.titleMedium,fontWeight=FontWeight.Medium)
+                    Text("Backend and device debugging lives here. Normal use does not require these controls.",color=OmniMuted,style=MaterialTheme.typography.bodySmall)
+                    OutlinedTextField(
+                        value=backendUrl,
+                        onValueChange=onBackendChange,
+                        enabled=!running,
+                        singleLine=true,
+                        label={Text("Backend URL")},
+                        modifier=Modifier.fillMaxWidth()
+                    )
+                    Button(onClick=onTestTransport,enabled=!backendChecking && backendUrl.isNotBlank(),modifier=Modifier.fillMaxWidth()) {
+                        Text(if(backendChecking) "Checking…" else "Test connection")
+                    }
+                    backendCheckStatus?.let { Text(it,color=if(it.startsWith("Transport OK")) OmniAccent else OmniMuted,style=MaterialTheme.typography.bodySmall) }
+                    HorizontalDivider()
+                    OutlinedButton(onClick=onCopyDiagnostics,modifier=Modifier.fillMaxWidth()) { Text("Copy diagnostics") }
+                    copiedStatus?.let { Text(it,color=OmniMuted,style=MaterialTheme.typography.bodySmall) }
+                    Text(
+                        "App "+BuildConfig.VERSION_NAME+" · build "+BuildConfig.BUILD_COMMIT.take(12)+if(BuildConfig.ROOT_LAB_ENABLED) " · root-lab" else "",
+                        color=OmniMuted,
+                        style=MaterialTheme.typography.labelSmall
+                    )
+                }
+            }
+        }
+    }
+}
+
+private fun effectLabel(effect:String):String=when(effect) {
+    "soft_focus" -> "Soft"
+    "monochrome" -> "B&W"
+    "pixelate" -> "Pixel"
+    "custom_onnx" -> "Model"
+    else -> "Natural"
 }

@@ -222,6 +222,7 @@ class WebRtcClient(
             val p=QualityProfile.fromName(activeProfileName)
             capturer!!.startCapture(p.width,p.height,p.cameraFps)
             localTrack=factory.createVideoTrack("omnilive-camera",source)
+            localTrack!!.addSink(CameraPreviewBus)
             localTrack!!.addSink(captureTimingSink)
         }
     }

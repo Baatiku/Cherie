@@ -21,6 +21,13 @@ val defaultBackendUrl = providers.environmentVariable("OMNILIVE_DEFAULT_BACKEND_
     ?.takeIf { it.isNotBlank() }
     ?: "http://10.0.2.2:8000"
 
+// Release signing reads from env so no secrets live in Git. If the keystore
+// or password is absent, the release build stays unsigned.
+val releaseStorePassword = providers.environmentVariable("OMNILIVE_KEYSTORE_PASSWORD").orNull
+val releaseKeyPassword = providers.environmentVariable("OMNILIVE_KEY_PASSWORD").orNull ?: releaseStorePassword
+val releaseKeystoreFile = file("omnilive-release.keystore")
+val releaseSigningReady = releaseKeystoreFile.exists() && !releaseStorePassword.isNullOrBlank()
+
 android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -43,6 +50,23 @@ android {
     buildFeatures {
         compose = true
         buildConfig = true
+    }
+
+    signingConfigs {
+        create("release") {
+            storeFile = releaseKeystoreFile
+            storePassword = releaseStorePassword
+            keyAlias = "omnilive"
+            keyPassword = releaseKeyPassword
+        }
+    }
+
+    buildTypes {
+        release {
+            signingConfig = if (releaseSigningReady) signingConfigs.getByName("release") else null
+            isMinifyEnabled = false
+            isShrinkResources = false
+        }
     }
 
     sourceSets {

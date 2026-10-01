@@ -130,7 +130,7 @@ private fun OmniLiveApp() {
                 referencePreview=withContext(Dispatchers.IO) {
                     ReferenceImageStore.preview(imported.path)?.asImageBitmap()
                 }
-                referenceStatus="Ready to use"
+                referenceStatus="Ready to use (${imported.bytes/1024} KB)"
                 LiveTelemetry.update {
                     it.copy(
                         referenceImageStatus="selected",

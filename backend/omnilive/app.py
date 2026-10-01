@@ -638,6 +638,13 @@ async def live_socket(websocket: WebSocket):
                     reference = decode_reference_image(upload.data_base64)
                     if not registry.set_reference_image(session.session_id, reference):
                         raise ValueError("live session is no longer available")
+                    logger.info(
+                        "reference image ready for session %s (%dx%d, %d bytes)",
+                        session.session_id,
+                        reference.width,
+                        reference.height,
+                        len(reference.jpeg_bytes),
+                    )
                     await send_json(
                         {
                             "event": "reference_image",
@@ -648,6 +655,11 @@ async def live_socket(websocket: WebSocket):
                         }
                     )
                 except (ValidationError, ValueError) as exc:
+                    logger.warning(
+                        "reference image rejected for session %s: %s",
+                        session.session_id if session else "unknown",
+                        exc,
+                    )
                     await send_json(
                         {
                             "event": "reference_image",

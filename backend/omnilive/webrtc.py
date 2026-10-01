@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from typing import Callable
 
 from aiortc import MediaStreamTrack, RTCConfiguration, RTCIceServer, RTCPeerConnection, RTCSessionDescription
 from aiortc.mediastreams import MediaStreamError
+
+logger = logging.getLogger("omnilive.webrtc")
 
 from .frame_correlation import FrameCorrelator
 from .ice import current_ice_config
@@ -88,9 +91,11 @@ class LatestFrameSource:
                     self._latest = (self._latest_sequence, frame, received_at)
                     self._condition.notify_all()
         except asyncio.CancelledError:
-            pass
-        except Exception:
-            pass
+            raise
+        except Exception as exc:
+            # Never silently drop the input pump: surface it so /health
+            # and logs show why a live track went dark.
+            logger.warning("latest-frame pump ended: %s", exc)
         finally:
             async with self._condition:
                 self._closed = True

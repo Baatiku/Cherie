@@ -1,6 +1,10 @@
 import modal
+import os
 
 MODEL_ROOT="/models"
+# Propagate the deployed git SHA so /health.build_sha matches the tested
+# commit on Modal (Render sets RENDER_GIT_COMMIT, Modal does not).
+BUILD_SHA = os.getenv("OMNILIVE_BUILD_SHA") or os.getenv("RENDER_GIT_COMMIT") or "unknown"
 model_volume=modal.Volume.from_name("omnilive-models",create_if_missing=True)
 runtime_secret=modal.Secret.from_name(
     "omnilive-runtime",
@@ -30,9 +34,10 @@ app=modal.App("omnilive")
     gpu="L4",
     volumes={MODEL_ROOT:model_volume},
     secrets=[runtime_secret],
-    env={"OMNILIVE_MODEL_ROOT":MODEL_ROOT},
+    env={"OMNILIVE_MODEL_ROOT": MODEL_ROOT, "OMNILIVE_BUILD_SHA": BUILD_SHA, "OMNILIVE_PRODUCTION": "1"},
     scaledown_window=300,
     timeout=3600,
+    min_containers=0,
 )
 @modal.concurrent(max_inputs=1)
 @modal.asgi_app()

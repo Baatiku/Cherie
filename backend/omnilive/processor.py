@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import logging
 from dataclasses import dataclass, field
 from threading import Lock
 import time
@@ -7,6 +9,8 @@ import time
 from av import VideoFrame
 import cv2
 import numpy as np
+
+logger = logging.getLogger("omnilive.processor")
 
 from .config import settings
 from .model_runtime import runtime
@@ -583,17 +587,22 @@ class TimedProcessor:
             if effect == EffectProfile.ORIGINAL:
                 return frame
             if not self._should_localize(effect) and force_region is None:
-                return await self.visual.process(frame, effect)
-            rgb = frame.to_ndarray(format="rgb24")
-            out = self.localized.process_rgb(
+                # Full-frame built-in effects are still CPU-bound (cv2 resize/blur);
+                # keep the asyncio loop free for aiortc signalling/timing.
+                rgb = await asyncio.to_thread(frame.to_ndarray, format="rgb24")
+                out = await asyncio.to_thread(self.visual.process_rgb, rgb, effect)
+                return _video_frame(out, frame)
+            rgb = await asyncio.to_thread(frame.to_ndarray, format="rgb24")
+            out = await asyncio.to_thread(
+                self.localized.process_rgb,
                 rgb,
                 effect,
                 stream_key,
                 profile,
-                force_region=force_region,
-                force_inference=force_inference,
-                crop_max_side_override=crop_max_side_override,
-                trace=trace,
+                force_region,
+                force_inference,
+                crop_max_side_override,
+                trace,
             )
             return _video_frame(out, frame)
         finally:

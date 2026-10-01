@@ -17,6 +17,13 @@ def _bool(name: str, default: bool = False) -> bool:
 class Settings:
     session_secret: str = os.getenv("OMNILIVE_SESSION_SECRET", "development-only-secret")
     session_ttl_seconds: int = int(os.getenv("OMNILIVE_SESSION_TTL_SECONDS", "900"))
+    max_sessions: int = int(os.getenv("OMNILIVE_MAX_SESSIONS", "32"))
+    live_handshake_timeout_seconds: float = float(os.getenv("OMNILIVE_LIVE_HANDSHAKE_TIMEOUT_SECONDS", "15"))
+    live_max_duration_seconds: float = float(os.getenv("OMNILIVE_LIVE_MAX_DURATION_SECONDS", "3600"))
+    live_max_idle_seconds: float = float(os.getenv("OMNILIVE_LIVE_MAX_IDLE_SECONDS", "60"))
+    enable_benchmark: bool = _bool("OMNILIVE_ENABLE_BENCHMARK", True)
+    cors_allow_origins: tuple[str, ...] = _csv("OMNILIVE_CORS_ALLOW_ORIGINS", "")
+    is_production: bool = _bool("OMNILIVE_PRODUCTION", False)
     max_frame_age_ms: int = int(os.getenv("OMNILIVE_MAX_FRAME_AGE_MS", "140"))
     target_fps: int = int(os.getenv("OMNILIVE_TARGET_FPS", "30"))
     model_id: str = os.getenv("OMNILIVE_MODEL_ID", "none")
@@ -59,3 +66,9 @@ class Settings:
 
 
 settings = Settings()
+
+if settings.is_production and settings.session_secret == "development-only-secret":
+    raise RuntimeError("OMNILIVE_SESSION_SECRET must be set when OMNILIVE_PRODUCTION=1")
+
+if settings.is_production and len(settings.session_secret) < 32:
+    raise RuntimeError("OMNILIVE_SESSION_SECRET must be at least 32 characters in production")

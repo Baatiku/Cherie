@@ -91,8 +91,11 @@ private fun OmniLiveApp() {
         mutableStateOf(prefs.getString("backend_url",BuildConfig.DEFAULT_BACKEND_URL) ?: BuildConfig.DEFAULT_BACKEND_URL)
     }
     var referencePath by remember { mutableStateOf(prefs.getString("reference_image_path",null)) }
-    var referencePreview by remember {
-        mutableStateOf(ReferenceImageStore.preview(referencePath)?.asImageBitmap())
+    var referencePreview by remember { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
+    LaunchedEffect(referencePath) {
+        referencePreview=withContext(Dispatchers.IO) {
+            ReferenceImageStore.preview(referencePath)?.asImageBitmap()
+        }
     }
     var referenceStatus by remember { mutableStateOf<String?>(null) }
     var backendChecking by remember { mutableStateOf(false) }
@@ -106,8 +109,14 @@ private fun OmniLiveApp() {
     val permissionLauncher=rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
         cameraGranted=it
     }
+    val notificationPermissionLauncher=rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
     LaunchedEffect(Unit) {
         if(!cameraGranted) permissionLauncher.launch(Manifest.permission.CAMERA)
+        if(android.os.Build.VERSION.SDK_INT>=33 &&
+            ContextCompat.checkSelfPermission(context,Manifest.permission.POST_NOTIFICATIONS)!=PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
     }
 
     val referencePicker=rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
@@ -481,13 +490,26 @@ private fun LookScreen(
             Column(Modifier.padding(16.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
                 Text("Style",style=MaterialTheme.typography.titleMedium,fontWeight=FontWeight.Medium)
                 Text("Keep it natural or add a simple visual treatment.",color=OmniMuted)
-                listOf("original" to "Natural","soft_focus" to "Soft","monochrome" to "Black & white").forEach {
+                listOf(
+                    "original" to "Natural",
+                    "soft_focus" to "Soft",
+                    "monochrome" to "Black & white",
+                    "pixelate" to "Pixel",
+                    "custom_onnx" to "AI model"
+                ).forEach {
                     FilterChip(
                         selected=effect==it.first,
                         onClick={onEffectChange(it.first)},
                         enabled=!running,
                         label={Text(it.second)},
                         modifier=Modifier.fillMaxWidth()
+                    )
+                }
+                if(effect=="custom_onnx") {
+                    Text(
+                        "AI model runs on the GPU backend (/models). Some models need a reference photo above.",
+                        color=OmniMuted,
+                        style=MaterialTheme.typography.bodySmall
                     )
                 }
             }

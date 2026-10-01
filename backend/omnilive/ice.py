@@ -31,8 +31,17 @@ def turn_rest_credentials(
     return username, credential, expires_at
 
 
+def _is_turn_url(url: str) -> bool:
+    lowered = url.strip().lower()
+    return lowered.startswith("turn:") or lowered.startswith("turns:")
+
+
 def current_ice_config() -> IceConfig:
-    urls = list(settings.ice_urls)
+    urls = [u for u in settings.ice_urls if u.strip()]
+    if not urls:
+        urls = ["stun:stun.l.google.com:19302"]
+    stun_urls = [u for u in urls if not _is_turn_url(u)]
+    turn_urls = [u for u in urls if _is_turn_url(u)]
     if settings.turn_shared_secret:
         ttl = min(
             max(60, settings.turn_credential_ttl_seconds),
@@ -43,10 +52,35 @@ def current_ice_config() -> IceConfig:
             ttl,
             settings.turn_user,
         )
+        servers: list[IceServer] = []
+        if stun_urls:
+            # STUN never needs TURN REST credentials.
+            servers.append(IceServer(urls=stun_urls))
+        if turn_urls:
+            servers.append(IceServer(urls=turn_urls, username=username, credential=credential))
+        if not servers:
+            servers.append(IceServer(urls=urls, username=username, credential=credential))
         return IceConfig(
-            servers=[IceServer(urls=urls, username=username, credential=credential)],
+            servers=servers,
             credential_mode="rest_shared_secret",
             expires_at=expires_at,
+        )
+    if turn_urls or stun_urls:
+        servers = []
+        if stun_urls:
+            servers.append(IceServer(urls=stun_urls))
+        if turn_urls:
+            servers.append(
+                IceServer(
+                    urls=turn_urls,
+                    username=settings.ice_username,
+                    credential=settings.ice_credential,
+                )
+            )
+        return IceConfig(
+            servers=servers,
+            credential_mode="static",
+            expires_at=None,
         )
     return IceConfig(
         servers=[

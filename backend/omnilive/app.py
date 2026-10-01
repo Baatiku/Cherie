@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import os
 from contextlib import asynccontextmanager
 import time
@@ -7,7 +8,10 @@ import uuid
 import numpy as np
 from av import VideoFrame
 from fastapi import FastAPI, Header, HTTPException, Response, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, ValidationError
+
+logger = logging.getLogger("omnilive.app")
 
 from .config import settings
 from .frame_policy import decide_frame
@@ -55,13 +59,47 @@ from .webrtc import FrameTimingBridge, accept_offer, close_all_peers, close_peer
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    async def janitor() -> None:
+        # Opportunistically reclaim expired sessions and their WebRTC peers
+        # so a long-lived L4 container cannot leak memory/peer objects.
+        while True:
+            try:
+                await asyncio.sleep(60.0)
+                removed = registry.sweep_expired()
+                if removed:
+                    logger.info("session janitor removed %d expired sessions", removed)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("session janitor failed: %s", exc)
+
+    task = asyncio.create_task(janitor(), name="omnilive-session-janitor")
     try:
         yield
     finally:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
         await close_all_peers()
 
 
-app = FastAPI(title="OmniLive", version="0.10.0", lifespan=lifespan)
+app = FastAPI(title="OmniLive", version="0.11.0", lifespan=lifespan)
+
+if settings.cors_allow_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=list(settings.cors_allow_origins),
+        allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type"],
+        max_age=600,
+    )
+
+
+def _require_benchmark_enabled() -> None:
+    if not settings.enable_benchmark:
+        raise HTTPException(status_code=403, detail="benchmark endpoints are disabled in production")
 
 
 class BenchmarkRequest(BaseModel):
@@ -107,7 +145,8 @@ class LiveSocketStart(BaseModel):
 class LiveReferenceImage(BaseModel):
     action: str = "reference_image"
     mime_type: str = "image/jpeg"
-    data_base64: str = Field(min_length=16, max_length=3_000_000)
+    # 2.8M base64 ≈ 2.1M raw, aligned with decode_reference_image 2M cap.
+    data_base64: str = Field(min_length=16, max_length=2_800_000)
 
 
 class LiveFrameMark(BaseModel):
@@ -318,6 +357,8 @@ def telemetry_payload():
         "frame_correlation_out_of_order": frame_correlation_out_of_order_counter.value,
         "frame_timing_publish_drops": frame_timing_publish_drop_counter.value,
         "model_recovery_skips": model_recovery_skip_counter.value,
+        "active_sessions": registry.count(),
+        "max_sessions": settings.max_sessions,
         "stages": {
             "input_wait": _window_payload(media_wait_window),
             "input_age": _window_payload(input_age_window),
@@ -462,6 +503,8 @@ async def live_socket(websocket: WebSocket):
     telemetry_task = None
     send_lock = asyncio.Lock()
     timing_queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=64)
+    started_at = time.monotonic()
+    last_activity = time.monotonic()
 
     async def send_json(payload: dict) -> None:
         async with send_lock:
@@ -491,7 +534,18 @@ async def live_socket(websocket: WebSocket):
 
     timing_bridge = FrameTimingBridge(publish_timing)
     try:
-        payload = await websocket.receive_json()
+        try:
+            payload = await asyncio.wait_for(
+                websocket.receive_json(),
+                timeout=settings.live_handshake_timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            logger.warning("live handshake timed out before first message")
+            try:
+                await send_json({"event": "error", "detail": "handshake timeout"})
+            except Exception:
+                pass
+            return
         if payload.get("action") == "probe":
             ice = current_ice_config()
             await send_json(
@@ -514,7 +568,12 @@ async def live_socket(websocket: WebSocket):
             await send_json({"event": "error", "detail": "invalid live start payload"})
             return
 
-        session = registry.create(start.profile, start.effect, start.region_hint)
+        try:
+            session = registry.create(start.profile, start.effect, start.region_hint)
+        except RuntimeError:
+            logger.warning("live start rejected: too many active sessions")
+            await send_json({"event": "error", "detail": "server busy, try again shortly"})
+            return
         answer = await accept_offer(
             WebRtcOffer(
                 session_id=session.session_id,
@@ -541,7 +600,23 @@ async def live_socket(websocket: WebSocket):
         telemetry_task = asyncio.create_task(telemetry_sender(), name="omnilive-live-telemetry")
 
         while True:
-            message = await websocket.receive_json()
+            if time.monotonic() - started_at > settings.live_max_duration_seconds:
+                logger.info("live session %s reached max duration", session.session_id)
+                await send_json({"event": "error", "detail": "max call duration reached"})
+                break
+            try:
+                message = await asyncio.wait_for(
+                    websocket.receive_json(),
+                    timeout=settings.live_max_idle_seconds,
+                )
+            except asyncio.TimeoutError:
+                logger.info("live session %s idle timeout", session.session_id)
+                try:
+                    await send_json({"event": "error", "detail": "idle timeout"})
+                except Exception:
+                    pass
+                break
+            last_activity = time.monotonic()
             action = message.get("action")
             if action == "stop":
                 break
@@ -597,7 +672,8 @@ async def live_socket(websocket: WebSocket):
             await send_json({"event": "error", "detail": "unsupported live action"})
     except WebSocketDisconnect:
         pass
-    except Exception:
+    except Exception as exc:
+        logger.warning("live session failed: %s", exc)
         try:
             await send_json({"event": "error", "detail": "live session failed"})
         except Exception:
@@ -615,6 +691,7 @@ async def live_socket(websocket: WebSocket):
 
 @app.post("/v1/benchmark")
 async def benchmark(body: BenchmarkRequest):
+    _require_benchmark_enabled()
     before = processor_window.snapshot().count
     sample = np.zeros((body.height, body.width, 3), dtype=np.uint8)
     sample[::8, :, :] = 96
@@ -655,6 +732,7 @@ async def benchmark(body: BenchmarkRequest):
 
 @app.post("/v1/benchmark/matrix")
 async def benchmark_matrix(body: BenchmarkMatrixRequest):
+    _require_benchmark_enabled()
     crop_sizes = [max(64, min(1024, int(value))) for value in body.crop_sizes]
     cases = []
     started = time.perf_counter()
@@ -701,7 +779,10 @@ async def benchmark_matrix(body: BenchmarkMatrixRequest):
 
 @app.post("/v1/sessions", response_model=SessionResponse)
 def create_session(body: CreateSessionRequest):
-    return registry.create(body.profile, body.effect, body.region_hint)
+    try:
+        return registry.create(body.profile, body.effect, body.region_hint)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
 
 
 def _authorized_session(session_id: str, authorization: str | None):

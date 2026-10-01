@@ -17,15 +17,37 @@ class SessionState:
     reference_image:ValidatedReferenceImage|None=None
 
 class SessionRegistry:
-    def __init__(self):
+    def __init__(self, max_sessions: int | None = None):
         self._items={}
         self._lock=threading.Lock()
+        configured = max_sessions if max_sessions is not None else settings.max_sessions
+        self._max_sessions = max(1, int(configured))
+
+    def count(self) -> int:
+        with self._lock:
+            return len(self._items)
+
+    def sweep_expired(self) -> int:
+        now=int(time.time())
+        with self._lock:
+            expired=[sid for sid, state in self._items.items() if state.expires_at <= now]
+            for sid in expired:
+                self._items.pop(sid, None)
+            return len(expired)
 
     def _digest(self,token:str)->str:
         return hmac.new(settings.session_secret.encode(),token.encode(),hashlib.sha256).hexdigest()
 
     def create(self,profile:QualityProfile,effect:EffectProfile,region_hint:str|None)->SessionResponse:
         now=int(time.time())
+        with self._lock:
+            # Drop expired entries opportunistically so a leaked registry
+            # cannot grow unbounded on a long-lived GPU container.
+            expired=[sid for sid, state in self._items.items() if state.expires_at <= now]
+            for sid in expired:
+                self._items.pop(sid, None)
+            if len(self._items) >= self._max_sessions:
+                raise RuntimeError("too many active sessions")
         sid=secrets.token_urlsafe(18)
         token=secrets.token_urlsafe(32)
         state=SessionState(

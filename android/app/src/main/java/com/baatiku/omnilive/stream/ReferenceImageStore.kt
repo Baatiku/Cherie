@@ -84,11 +84,23 @@ object ReferenceImageStore {
         return ImportedReferenceImage(file.absolutePath,width,height,file.length())
     }
 
-    fun preview(path:String?):Bitmap? {
+    fun preview(path:String?, maxSide:Int = 512):Bitmap? {
         if(path.isNullOrBlank()) return null
         val file=File(path)
         if(!file.isFile) return null
-        return BitmapFactory.decodeFile(file.absolutePath)
+        // Subsampled decode so Compose preview never holds a full-res bitmap.
+        val bounds=BitmapFactory.Options().apply { inJustDecodeBounds=true }
+        BitmapFactory.decodeFile(file.absolutePath, bounds)
+        if(bounds.outWidth<=0 || bounds.outHeight<=0) {
+            return BitmapFactory.decodeFile(file.absolutePath)
+        }
+        var sample=1
+        while(bounds.outWidth/sample>maxSide*2 || bounds.outHeight/sample>maxSide*2) sample*=2
+        val options=BitmapFactory.Options().apply {
+            inSampleSize=sample
+            inPreferredConfig=Bitmap.Config.ARGB_8888
+        }
+        return BitmapFactory.decodeFile(file.absolutePath, options)
     }
 
     fun clear(path:String?) {

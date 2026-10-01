@@ -157,6 +157,16 @@ class WebRtcClient(
         frameMarksEnabled=false
         ReturnedVideoBus.setStreamAvailable(false)
         frameLatency.reset()
+        // Best-effort cleanup of the previous pinned server session before
+        // opening a new one, so a network drop does not leak an L4 peer.
+        val previousSession=session
+        session=null
+        if(previousSession!=null) {
+            val urlSnapshot=baseUrl
+            scope.launch {
+                runCatching { SessionApi.dispose(urlSnapshot,previousSession) }
+            }
+        }
         closeLiveSocket("reconnect")
         LiveTelemetry.update {
             it.copy(
@@ -246,11 +256,23 @@ class WebRtcClient(
             }
             override fun onCreateFailure(error:String) { fail(error) }
         },MediaConstraints())
+        // Fallback if ICE gathering stalls behind restrictive NAT: proceed with
+        // whatever local candidates exist after 3.5s instead of never dialling.
+        scope.launch {
+            delay(3500)
+            if(!stopped.get() && !localDescriptionReady) {
+                val local=peer?.localDescription
+                if(local!=null) {
+                    localDescriptionReady=true
+                    openLiveSocket(local.description)
+                }
+            }
+        }
 
         statsJob?.cancel()
         statsJob=scope.launch {
             while(isActive) {
-                delay(2000)
+                delay(1000)
                 collectStats()
             }
         }
@@ -501,7 +523,9 @@ class WebRtcClient(
         if(stopped.get() || reconnectJob?.isActive==true) return
         reconnectAttempts++
         val exponent=minOf(reconnectAttempts-1,5)
-        val delayMs=minOf(30000L,1000L*(1L shl exponent))
+        val baseDelayMs=minOf(30000L,1000L*(1L shl exponent))
+        val jitterMs=(Math.random()*1000.0).toLong()
+        val delayMs=baseDelayMs+jitterMs
         LiveTelemetry.update { it.copy(connectionState="reconnecting",lastError="Retry in "+delayMs+" ms") }
         reconnectJob=scope.launch {
             delay(delayMs)

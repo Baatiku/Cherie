@@ -16,6 +16,7 @@ _GPU_PROVIDERS = ("TensorrtExecutionProvider", "CUDAExecutionProvider")
 class OnnxRuntime:
     def __init__(self):
         self._lock = Lock()
+        self._infer_lock = Lock()
         self._session = None
         self._model_path = None
         self._providers: list[str] = []
@@ -402,7 +403,10 @@ class OnnxRuntime:
         feeds, live_nchw = self._feeds(session, rgb, reference_rgb)
         h, w = rgb.shape[:2]
         try:
-            y = session.run(None, feeds)[0]
+            # ONNX run is blocking and now happens on a worker thread
+            # (see TimedProcessor); serialize runs to keep GPU providers safe.
+            with self._infer_lock:
+                y = session.run(None, feeds)[0]
             self._mark_inference_success()
             return self._decode_output(y, live_nchw, w, h)
         except Exception as first_exc:
@@ -418,7 +422,8 @@ class OnnxRuntime:
             if recovered_session is None:
                 raise RuntimeError("model runtime recovery could not create a replacement session")
             recovered_feeds, recovered_nchw = self._feeds(recovered_session, rgb, reference_rgb)
-            y = recovered_session.run(None, recovered_feeds)[0]
+            with self._infer_lock:
+                y = recovered_session.run(None, recovered_feeds)[0]
             self._mark_recovery_success()
             return self._decode_output(y, recovered_nchw, w, h)
         except Exception as recovery_exc:

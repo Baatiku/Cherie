@@ -6,7 +6,7 @@ client=TestClient(app)
 
 def test_benchmark_builtin_effect():
     response=client.post("/v1/benchmark",json={
-        "effect":"monochrome",
+        "effect":"custom_onnx",
         "width":128,
         "height":96,
         "frames":3,
@@ -20,7 +20,7 @@ def test_benchmark_builtin_effect():
 
 def test_benchmark_matrix_uses_live_processor_path():
     response=client.post("/v1/benchmark/matrix",json={
-        "effect":"monochrome",
+        "effect":"custom_onnx",
         "profiles":["low_latency"],
         "crop_sizes":[64,96],
         "width":128,

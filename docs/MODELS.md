@@ -2,23 +2,12 @@
 
 OmniLive mounts a persistent Modal Volume named `omnilive-models` at `/models`. Large model files stay outside Git.
 
-## Built-in effects
+OmniLive does one thing: face swap. The only effects are:
 
-These need no external weights:
-- original
-- soft_focus
-- monochrome
-- pixelate
+- original (untouched pass-through, used as the bypass)
+- custom_onnx (the face-swap model, localized by default)
 
-Built-in effects remain full-frame by default so transport can be verified independently of detector accuracy.
-
-Set:
-
-```text
-OMNILIVE_LOCALIZED_EFFECTS=all
-```
-
-to route all non-original effects through the localized temporal pipeline.
+There are no other visual styles. The app always runs face swap.
 
 ## Generic ONNX visual adapter
 

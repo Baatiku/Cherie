@@ -86,7 +86,6 @@ private fun OmniLiveApp() {
 
     var page by remember { mutableIntStateOf(0) }
     var profile by remember { mutableStateOf(prefs.getString("profile","balanced") ?: "balanced") }
-    var effect by remember { mutableStateOf(prefs.getString("effect","original") ?: "original") }
     var backendUrl by remember {
         mutableStateOf(prefs.getString("backend_url",BuildConfig.DEFAULT_BACKEND_URL) ?: BuildConfig.DEFAULT_BACKEND_URL)
     }
@@ -152,11 +151,11 @@ private fun OmniLiveApp() {
         }
         val intent=Intent(context,LiveStreamService::class.java)
             .putExtra("profile",profile)
-            .putExtra("effect",effect)
+            .putExtra("effect","custom_onnx")
             .putExtra("backend_url",backendUrl)
         referencePath?.let { intent.putExtra("reference_image_path",it) }
         runCatching {
-            LiveSessionState.starting(profile,effect,backendUrl)
+            LiveSessionState.starting(profile,"custom_onnx",backendUrl)
             ContextCompat.startForegroundService(context,intent)
         }.onFailure { LiveSessionState.failed(it) }
     }
@@ -171,7 +170,7 @@ private fun OmniLiveApp() {
         bottomBar={
             NavigationBar(containerColor=OmniSurface) {
                 NavigationBarItem(selected=page==0,onClick={page=0},icon={Text("●")},label={Text("Camera")})
-                NavigationBarItem(selected=page==1,onClick={page=1},icon={Text("✦")},label={Text("Look")})
+                NavigationBarItem(selected=page==1,onClick={page=1},icon={Text("✦")},label={Text("Face")})
                 NavigationBarItem(selected=page==2,onClick={page=2},icon={Text("⚙")},label={Text("Settings")})
             }
         }
@@ -186,7 +185,6 @@ private fun OmniLiveApp() {
                 error=liveSession.error ?: telemetry.lastError,
                 cameraGranted=cameraGranted,
                 referenceSelected=referencePath!=null,
-                activeEffect=effect,
                 onStart={startSession()},
                 onStop={stopSession()},
                 onGrantCamera={permissionLauncher.launch(Manifest.permission.CAMERA)},
@@ -195,7 +193,6 @@ private fun OmniLiveApp() {
             1 -> LookScreen(
                 modifier=Modifier.padding(innerPadding),
                 running=running,
-                effect=effect,
                 referencePreview=referencePreview,
                 referenceSelected=referencePath!=null,
                 referenceStatus=referenceStatus,
@@ -214,10 +211,6 @@ private fun OmniLiveApp() {
                             referenceImageError=null
                         )
                     }
-                },
-                onEffectChange={
-                    effect=it
-                    prefs.edit().putString("effect",it).apply()
                 }
             )
             else -> SettingsScreen(
@@ -245,7 +238,7 @@ private fun OmniLiveApp() {
                         scope.launch {
                             val result=runCatching {
                                 withContext(Dispatchers.IO) {
-                                    TransportPreflight.run(backendUrl,profile,effect)
+                                    TransportPreflight.run(backendUrl,profile,"custom_onnx")
                                 }
                             }
                             backendCheckStatus=result.fold(
@@ -290,7 +283,6 @@ private fun CameraHome(
     error:String?,
     cameraGranted:Boolean,
     referenceSelected:Boolean,
-    activeEffect:String,
     onStart:()->Unit,
     onStop:()->Unit,
     onGrantCamera:()->Unit,
@@ -414,16 +406,13 @@ private fun CameraHome(
             )
         }
 
-        Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(12.dp)) {
-            QuickInfoCard(Modifier.weight(1f),"Look",effectLabel(activeEffect))
-            QuickInfoCard(Modifier.weight(1f),"Reference",if(referenceSelected) "Ready" else "None")
-        }
+        QuickInfoCard(Modifier.fillMaxWidth(),"Face source",if(referenceSelected) "Ready" else "None")
 
         FilledTonalButton(
             onClick=onOpenLook,
             modifier=Modifier.fillMaxWidth(),
             shape=RoundedCornerShape(16.dp)
-        ) { Text(if(referenceSelected) "Change your look" else "Set up your look") }
+        ) { Text(if(referenceSelected) "Change face photo" else "Set up face swap") }
     }
 }
 
@@ -441,20 +430,18 @@ private fun QuickInfoCard(modifier:Modifier,title:String,value:String) {
 private fun LookScreen(
     modifier:Modifier,
     running:Boolean,
-    effect:String,
     referencePreview:androidx.compose.ui.graphics.ImageBitmap?,
     referenceSelected:Boolean,
     referenceStatus:String?,
     onPickReference:()->Unit,
-    onRemoveReference:()->Unit,
-    onEffectChange:(String)->Unit
+    onRemoveReference:()->Unit
 ) {
     Column(
         modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(18.dp),
         verticalArrangement=Arrangement.spacedBy(18.dp)
     ) {
-        Text("Your look",style=MaterialTheme.typography.headlineMedium,fontWeight=FontWeight.Medium)
-        Text("Choose the photo and visual style OmniLive should use. Nothing technical is required here.",color=OmniMuted)
+        Text("Face swap",style=MaterialTheme.typography.headlineMedium,fontWeight=FontWeight.Medium)
+        Text("Choose the face photo OmniLive should swap onto you. Face swap is always on — there is nothing else to set up.",color=OmniMuted)
 
         Card(colors=CardDefaults.cardColors(containerColor=OmniSurface),shape=RoundedCornerShape(24.dp)) {
             Column(Modifier.padding(16.dp),verticalArrangement=Arrangement.spacedBy(14.dp)) {
@@ -488,30 +475,12 @@ private fun LookScreen(
 
         Card(colors=CardDefaults.cardColors(containerColor=OmniSurface),shape=RoundedCornerShape(24.dp)) {
             Column(Modifier.padding(16.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
-                Text("Style",style=MaterialTheme.typography.titleMedium,fontWeight=FontWeight.Medium)
-                Text("Keep it natural or add a simple visual treatment.",color=OmniMuted)
-                listOf(
-                    "original" to "Natural",
-                    "soft_focus" to "Soft",
-                    "monochrome" to "Black & white",
-                    "pixelate" to "Pixel",
-                    "custom_onnx" to "AI model"
-                ).forEach {
-                    FilterChip(
-                        selected=effect==it.first,
-                        onClick={onEffectChange(it.first)},
-                        enabled=!running,
-                        label={Text(it.second)},
-                        modifier=Modifier.fillMaxWidth()
-                    )
-                }
-                if(effect=="custom_onnx") {
-                    Text(
-                        "AI model runs on the GPU backend (/models). Some models need a reference photo above.",
-                        color=OmniMuted,
-                        style=MaterialTheme.typography.bodySmall
-                    )
-                }
+                Text("How it works",style=MaterialTheme.typography.titleMedium,fontWeight=FontWeight.Medium)
+                Text(
+                    "Your camera streams to the face-swap server and the swapped video comes back to your screen. The photo above is the face that gets swapped onto you.",
+                    color=OmniMuted,
+                    style=MaterialTheme.typography.bodySmall
+                )
             }
         }
     }
@@ -589,12 +558,4 @@ private fun SettingsScreen(
             }
         }
     }
-}
-
-private fun effectLabel(effect:String):String=when(effect) {
-    "soft_focus" -> "Soft"
-    "monochrome" -> "B&W"
-    "pixelate" -> "Pixel"
-    "custom_onnx" -> "Model"
-    else -> "Natural"
 }

@@ -20,7 +20,7 @@ class LiveStreamService:Service() {
 
     override fun onStartCommand(intent:Intent?,flags:Int,startId:Int):Int {
         val profileName=intent?.getStringExtra("profile") ?: "balanced"
-        val effectName=intent?.getStringExtra("effect") ?: "original"
+        val effectName=intent?.getStringExtra("effect") ?: "custom_onnx"
         val backendUrl=intent?.getStringExtra("backend_url") ?: BuildConfig.DEFAULT_BACKEND_URL
         val referenceImagePath=intent?.getStringExtra("reference_image_path")
         val profile=QualityProfile.fromName(profileName)

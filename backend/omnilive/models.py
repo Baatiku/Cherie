@@ -8,9 +8,6 @@ class QualityProfile(str,Enum):
 
 class EffectProfile(str,Enum):
     ORIGINAL="original"
-    SOFT_FOCUS="soft_focus"
-    MONOCHROME="monochrome"
-    PIXELATE="pixelate"
     CUSTOM_ONNX="custom_onnx"
 
 class CreateSessionRequest(BaseModel):

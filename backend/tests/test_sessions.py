@@ -5,8 +5,8 @@ from omnilive.app import app
 client=TestClient(app)
 
 def test_session_and_frame_policy():
-    created=client.post("/v1/sessions",json={"profile":"balanced","effect":"soft_focus"}).json()
-    assert created["effect"]=="soft_focus"
+    created=client.post("/v1/sessions",json={"profile":"balanced","effect":"custom_onnx"}).json()
+    assert created["effect"]=="custom_onnx"
     payload={
         "session_id":created["session_id"],
         "sequence":1,

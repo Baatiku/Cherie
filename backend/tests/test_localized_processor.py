@@ -26,7 +26,7 @@ def test_forced_region_exercises_localized_pipeline():
     output = asyncio.run(
         processor.process(
             frame,
-            EffectProfile.MONOCHROME,
+            EffectProfile.CUSTOM_ONNX,
             stream_key="localized-test",
             profile=QualityProfile.BALANCED,
             force_region=Region(24, 12, 48, 48),
@@ -49,7 +49,7 @@ def test_temporal_cache_reused_between_inference_slots():
     asyncio.run(
         processor.process(
             _textured_frame(),
-            EffectProfile.MONOCHROME,
+            EffectProfile.CUSTOM_ONNX,
             stream_key=key,
             profile=QualityProfile.LOW_LATENCY,
             force_region=region,
@@ -59,7 +59,7 @@ def test_temporal_cache_reused_between_inference_slots():
     asyncio.run(
         processor.process(
             _textured_frame(),
-            EffectProfile.MONOCHROME,
+            EffectProfile.CUSTOM_ONNX,
             stream_key=key,
             profile=QualityProfile.LOW_LATENCY,
             force_region=region,

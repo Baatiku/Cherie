@@ -67,18 +67,6 @@ class VisualProcessor:
     ) -> np.ndarray:
         if effect == EffectProfile.ORIGINAL:
             return rgb
-        if effect == EffectProfile.MONOCHROME:
-            gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
-            return np.repeat(gray[..., None], 3, axis=2)
-        if effect == EffectProfile.SOFT_FOCUS:
-            blurred = cv2.GaussianBlur(rgb, (0, 0), sigmaX=2.0, sigmaY=2.0)
-            return cv2.addWeighted(rgb, 0.72, blurred, 0.28, 0)
-        if effect == EffectProfile.PIXELATE:
-            h, w = rgb.shape[:2]
-            sw = max(16, w // 18)
-            sh = max(16, h // 18)
-            small = cv2.resize(rgb, (sw, sh), interpolation=cv2.INTER_LINEAR)
-            return cv2.resize(small, (w, h), interpolation=cv2.INTER_NEAREST)
         if effect == EffectProfile.CUSTOM_ONNX:
             return runtime.run_image(rgb, reference_rgb=reference_rgb)
         return rgb

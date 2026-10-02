@@ -116,10 +116,10 @@ def probe() -> dict:
         feeds[ref_name] = latent
     results = session.run(None, feeds)
     out_arr, mask_arr = (np.asarray(r) for r in results[:2])
-    swapped = np.clip(out_arr[0].transpose(1, 2, 0) * 0.5 + 127.5, 0, 255).astype(np.uint8)
+    swapped = np.clip(out_arr[0].transpose(1, 2, 0) * 127.5 + 127.5, 0, 255).astype(np.uint8)
     model_mask = np.clip(mask_arr[0, 0], 0.0, 1.0).astype(np.float32)
 
-    oval = (_face_oval(256, "arcface_128") / 255.0).astype(np.float32)
+    oval = (_face_oval(256, "arcface_128")).astype(np.float32)
     report = {}
     for label, latent_vec, extra in (
         ("plain+oval", src_vector.reshape(1, -1).astype(np.float32), []),
@@ -132,7 +132,7 @@ def probe() -> dict:
         run_results = session.run(None, feeds)
         run_out = np.asarray(run_results[0])
         run_swapped = np.clip(
-            run_out[0].transpose(1, 2, 0) * 0.5 + 127.5, 0, 255
+            run_out[0].transpose(1, 2, 0) * 127.5 + 127.5, 0, 255
         ).astype(np.uint8)
         pasted = paste_back(target, run_swapped, transform, extra or None, "arcface_128")
         faces = [r for r in engine.detector.detect(pasted) if r.kps is not None]

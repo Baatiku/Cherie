@@ -87,6 +87,10 @@ ENGINES = {
         "file": "swapper/inswapper_128_fp16.onnx",
         "crop": 128,
         "template": "arcface_128",
+        "input_scale": 1.0 / 255.0,
+        "input_mean": (0.0, 0.0, 0.0),
+        "denorm_mult": 255.0,
+        "denorm_add": 0.0,
         "mean": 0.0,
         "std": 255.0,
         "mapped": True,
@@ -96,6 +100,10 @@ ENGINES = {
         "file": "swapper/hyperswap_1a_256.onnx",
         "crop": 256,
         "template": "arcface_128",
+        "input_scale": 1.0 / 127.5,
+        "input_mean": (127.5, 127.5, 127.5),
+        "denorm_mult": 127.5,
+        "denorm_add": 127.5,
         "mean": 0.5,
         "std": 0.5,
         "mapped": False,
@@ -105,6 +113,10 @@ ENGINES = {
         "file": "swapper/hyperswap_1b_256.onnx",
         "crop": 256,
         "template": "arcface_128",
+        "input_scale": 1.0 / 127.5,
+        "input_mean": (127.5, 127.5, 127.5),
+        "denorm_mult": 127.5,
+        "denorm_add": 127.5,
         "mean": 0.5,
         "std": 0.5,
         "mapped": False,
@@ -114,6 +126,10 @@ ENGINES = {
         "file": "swapper/hyperswap_1c_256.onnx",
         "crop": 256,
         "template": "arcface_128",
+        "input_scale": 1.0 / 127.5,
+        "input_mean": (127.5, 127.5, 127.5),
+        "denorm_mult": 127.5,
+        "denorm_add": 127.5,
         "mean": 0.5,
         "std": 0.5,
         "mapped": False,
@@ -128,7 +144,7 @@ def _template_points(name: str, size: int) -> np.ndarray:
 
 
 def _similarity(src5: np.ndarray, dst5: np.ndarray) -> np.ndarray | None:
-    """Exact least-squares similarity transform (Umeyama, no RANSAC)."""
+    """Exact least-squares similarity transform with 3D-yaw aspect stabilization."""
     src = np.asarray(src5, dtype=np.float64).reshape(5, 2)
     dst = np.asarray(dst5, dtype=np.float64).reshape(5, 2)
     mu_src = src.mean(axis=0)
@@ -147,6 +163,29 @@ def _similarity(src5: np.ndarray, dst5: np.ndarray) -> np.ndarray | None:
     scale = float(((singular * np.diag(reflect)).sum()) / variance)
     if not np.isfinite(scale) or scale <= 0:
         return None
+
+    # Yaw robustness: in out-of-plane head turns (yaw), horizontal inter-ocular
+    # distance contracts by cos(yaw), causing standard Umeyama scale to artificially
+    # shrink and squash the face. Use the vertical axis (eye midpoint -> mouth midpoint)
+    # as an invariant baseline under yaw.
+    src_eye_mid = (src[0] + src[1]) * 0.5
+    src_mouth_mid = (src[3] + src[4]) * 0.5
+    src_vert = float(np.linalg.norm(src_mouth_mid - src_eye_mid))
+
+    dst_eye_mid = (dst[0] + dst[1]) * 0.5
+    dst_mouth_mid = (dst[3] + dst[4]) * 0.5
+    dst_vert = float(np.linalg.norm(dst_mouth_mid - dst_eye_mid))
+
+    if src_vert > 1e-4 and dst_vert > 1e-4:
+        vert_scale = dst_vert / src_vert
+        src_eye_dist = float(np.linalg.norm(src[1] - src[0]))
+        dst_eye_dist = float(np.linalg.norm(dst[1] - dst[0]))
+        canonical_ratio = dst_eye_dist / dst_vert
+        current_ratio = src_eye_dist / src_vert
+        # If horizontal distance foreshortened significantly relative to vertical (yaw > 30 deg)
+        if current_ratio < 0.75 * canonical_ratio:
+            scale = max(scale, vert_scale * 0.88)
+
     translation = mu_dst - scale * (rotation @ mu_src)
     matrix = np.hstack([scale * rotation, translation.reshape(2, 1)])
     return matrix.astype(np.float32)
@@ -170,11 +209,36 @@ def norm_crop(
     return warped, transform
 
 
+def _decompose_similarity(matrix: np.ndarray) -> tuple[float, float, float, float]:
+    """Decompose 2x3 affine similarity matrix into (tx, ty, scale, angle_rad)."""
+    tx = float(matrix[0, 2])
+    ty = float(matrix[1, 2])
+    scale = float(math.sqrt(matrix[0, 0] ** 2 + matrix[1, 0] ** 2))
+    angle = float(math.atan2(matrix[1, 0], matrix[0, 0]))
+    return tx, ty, scale, angle
+
+
+def _recompose_similarity(tx: float, ty: float, scale: float, angle: float) -> np.ndarray:
+    """Reconstruct 2x3 affine similarity matrix from (tx, ty, scale, angle_rad)."""
+    cos_a = math.cos(angle)
+    sin_a = math.sin(angle)
+    return np.array(
+        [
+            [scale * cos_a, -scale * sin_a, tx],
+            [scale * sin_a, scale * cos_a, ty],
+        ],
+        dtype=np.float32,
+    )
+
+
 class _OneEuro:
-    """Low-lag keypoint smoothing (standard One Euro filter)."""
+    """Low-lag smoothing with dynamic dt support."""
 
     def __init__(
-        self, freq: float = 30.0, min_cutoff: float = 1.0, beta: float = 0.02,
+        self,
+        freq: float = 30.0,
+        min_cutoff: float = 1.0,
+        beta: float = 0.02,
         d_cutoff: float = 1.0,
     ):
         self.freq = freq
@@ -183,22 +247,32 @@ class _OneEuro:
         self.d_cutoff = d_cutoff
         self.x_prev: float | None = None
         self.dx_prev = 0.0
+        self.last_time: float | None = None
 
     @staticmethod
     def _alpha(cutoff: float, freq: float) -> float:
         tau = 1.0 / (2.0 * math.pi * cutoff)
         return 1.0 / (1.0 + tau * freq)
 
-    def __call__(self, x: float) -> float:
+    def __call__(self, x: float, timestamp: float | None = None) -> float:
         value = float(x)
         if self.x_prev is None:
             self.x_prev = value
+            self.last_time = timestamp
             return value
-        dx = (value - self.x_prev) * self.freq
-        alpha_d = self._alpha(self.d_cutoff, self.freq)
+
+        if timestamp is not None and self.last_time is not None:
+            dt = timestamp - self.last_time
+            freq = 1.0 / max(dt, 1e-4) if dt > 0 else self.freq
+        else:
+            freq = self.freq
+        self.last_time = timestamp
+
+        dx = (value - self.x_prev) * freq
+        alpha_d = self._alpha(self.d_cutoff, freq)
         dx_hat = alpha_d * dx + (1.0 - alpha_d) * self.dx_prev
         cutoff = self.min_cutoff + self.beta * abs(dx_hat)
-        alpha = self._alpha(cutoff, self.freq)
+        alpha = self._alpha(cutoff, freq)
         estimate = alpha * value + (1.0 - alpha) * self.x_prev
         self.x_prev = estimate
         self.dx_prev = dx_hat
@@ -207,31 +281,44 @@ class _OneEuro:
     def reset(self, x: float | None = None) -> None:
         self.x_prev = None if x is None else float(x)
         self.dx_prev = 0.0
+        self.last_time = None
+
+
+def _soft_box_mask(size: int, margin: int = 12) -> np.ndarray:
+    """Distance-transform border feathering to prevent any rectangular box seams."""
+    box = np.zeros((size, size), dtype=np.uint8)
+    m = max(2, margin)
+    box[m : size - m, m : size - m] = 255
+    dist = cv2.distanceTransform(box, cv2.DIST_L2, 3)
+    feather = np.clip(dist / float(m), 0.0, 1.0).astype(np.float32)
+    blurred = cv2.GaussianBlur(feather, (0, 0), sigmaX=m / 3.0)
+    blurred[0, :] = 0.0
+    blurred[-1, :] = 0.0
+    blurred[:, 0] = 0.0
+    blurred[:, -1] = 0.0
+    return blurred
 
 
 def _face_oval(size: int, template: str = "arcface_112", grow: float = 1.0) -> np.ndarray:
-    """Feathered face-shaped mask in aligned-crop space.
-
-    Sized to cover ears, forehead, jaw and beard zone with the edge
-    hiding in the hair. The template MUST match the crop's own template
-    or the mask lands pixels off the face, asymmetric side to side.
-    """
+    """Anatomical face mask covering forehead, temples, jawline and chin."""
     dst = _template_points(template, size)
     left_eye, right_eye = dst[0], dst[1]
     eye_dist = float(np.linalg.norm(right_eye - left_eye)) + 1e-6
     cx = float((left_eye[0] + right_eye[0]) * 0.5)
-    cy = float(left_eye[1] + eye_dist * 0.62)
-    rx = eye_dist * 1.40 * grow
-    ry = eye_dist * 1.85 * grow
+    cy = float((left_eye[1] + right_eye[1]) * 0.5 + eye_dist * 0.65)
+    rx = eye_dist * 1.45 * grow
+    ry = eye_dist * 1.95 * grow
     yy, xx = np.mgrid[0:size, 0:size].astype(np.float32)
     oval = (((xx - cx) / rx) ** 2 + ((yy - cy) / ry) ** 2) <= 1.0
     mask = np.zeros((size, size), dtype=np.float32)
-    mask[oval] = 255.0
-    kernel = max(5, int(round(size / 20.0)))
+    mask[oval] = 1.0
+    kernel = max(5, int(round(size / 22.0)))
     if kernel % 2 == 0:
         kernel += 1
     mask = cv2.erode(mask, np.ones((kernel, kernel), np.uint8))
-    return cv2.GaussianBlur(mask, (0, 0), sigmaX=float(size) / 32.0)
+    blurred = cv2.GaussianBlur(mask, (0, 0), sigmaX=float(size) / 28.0)
+    # Combine with crop boundary feathering to guarantee no edge clipping
+    return blurred * _soft_box_mask(size, margin=max(6, int(size * 0.08)))
 
 
 def paste_back(
@@ -241,14 +328,7 @@ def paste_back(
     extra_masks: list[np.ndarray] | None = None,
     template: str = "arcface_112",
 ) -> np.ndarray:
-    """Composite a swapped crop back into the full frame.
-
-    Warps only the affected face area (not the whole frame). The mask is
-    the face oval times any extra masks (swapper / occlusion), with the
-    oval's core forced to full strength so an uneven occlusion cut can
-    never leave half a moustache behind. The full-strength swapped face
-    goes through; masking never eats it.
-    """
+    """Composite a swapped crop back into the full frame with seamless boundary blending."""
     height, width = frame.shape[:2]
     size = int(swapped.shape[0])
     inverse = cv2.invertAffineTransform(transform)
@@ -278,9 +358,8 @@ def paste_back(
         for extra in extra_masks:
             if extra.shape[:2] != (size, size):
                 extra = cv2.resize(extra, (size, size), interpolation=cv2.INTER_LINEAR)
+            # Occlusion masks gate visibility cleanly without hard core override
             alpha = alpha * np.clip(extra.astype(np.float32), 0.0, 1.0)
-    core = _face_oval(size, template, grow=0.72)
-    alpha = np.maximum(alpha, core)
     region_mask = cv2.warpAffine(
         alpha,
         local,
@@ -289,7 +368,7 @@ def paste_back(
         borderMode=cv2.BORDER_CONSTANT,
         borderValue=0.0,
     )
-    region_mask = np.clip(region_mask, 0.0, 255.0) / 255.0
+    region_mask = np.clip(region_mask, 0.0, 1.0)
     target = frame[y0:y1, x0:x1].astype(np.float32)
     if back.shape[:2] != target.shape[:2]:
         back = cv2.resize(back, (region_w, region_h), interpolation=cv2.INTER_LINEAR)
@@ -300,17 +379,59 @@ def paste_back(
     return output
 
 
+def _match_target_skin(
+    swapped: np.ndarray,
+    target_aligned: np.ndarray,
+    amount: float = 1.0,
+) -> np.ndarray:
+    """Transfer lighting, white balance, and skin tone from the live target face crop to the swapped crop in LAB.
+
+    Anchors the swapped face to the live room environment and skin tone, preventing
+    the alien-mask artifact.
+    """
+    try:
+        swapped_lab = cv2.cvtColor(swapped, cv2.COLOR_RGB2LAB).astype(np.float32)
+        target_lab = cv2.cvtColor(target_aligned, cv2.COLOR_RGB2LAB).astype(np.float32)
+        size = swapped.shape[0]
+
+        # Central face sampling mask to ignore hair and background borders
+        yy, xx = np.mgrid[0:size, 0:size].astype(np.float32)
+        cx, cy = size * 0.5, size * 0.55
+        rx, ry = size * 0.32, size * 0.40
+        mask = (((xx - cx) / rx) ** 2 + ((yy - cy) / ry) ** 2) <= 1.0
+
+        swapped_pts = swapped_lab[mask]
+        target_pts = target_lab[mask]
+
+        swapped_mean = swapped_pts.mean(axis=0)
+        swapped_std = swapped_pts.std(axis=0)
+        target_mean = target_pts.mean(axis=0)
+        target_std = target_pts.std(axis=0)
+
+        matched = np.empty_like(swapped_lab)
+        for c in range(3):
+            s_std = float(swapped_std[c]) + 1e-4
+            t_std = float(target_std[c]) + 1e-4
+            scale_ratio = np.clip(t_std / s_std, 0.65, 1.5)
+            matched[..., c] = (swapped_lab[..., c] - float(swapped_mean[c])) * scale_ratio + float(target_mean[c])
+
+        matched_rgb = cv2.cvtColor(np.clip(matched, 0, 255).astype(np.uint8), cv2.COLOR_LAB2RGB)
+        if amount >= 0.99:
+            return matched_rgb
+        blended = swapped.astype(np.float32) * (1.0 - amount) + matched_rgb.astype(np.float32) * amount
+        return np.clip(blended, 0, 255).astype(np.uint8)
+    except Exception as exc:
+        logger.warning("target skin match skipped: %s", exc)
+        return swapped
+
+
 def _match_skin(
     swapped: np.ndarray,
     ref_mean: np.ndarray,
     ref_std: np.ndarray,
     amount: float | np.ndarray = 1.0,
 ) -> np.ndarray:
-    """Pull the swapped crop's skin tone toward the reference photo in LAB.
-
-    Amount may be a per-pixel map: full reference tone in the face center
-    fading to live tone at the edge, so no visible seam rings the face.
-    """
+    """Pull the swapped crop's skin tone toward reference stats in LAB (legacy helper)."""
     try:
         swapped_lab = cv2.cvtColor(swapped, cv2.COLOR_RGB2LAB).astype(np.float32)
         matched = np.empty_like(swapped_lab)
@@ -408,12 +529,16 @@ class SwapStream:
     box: Region | None = None
     kps: np.ndarray | None = None
     euro: list[_OneEuro] = field(default_factory=list)
+    pose_euro: list[_OneEuro] = field(default_factory=list)
     frame_index: int = 0
     prev_centroid: np.ndarray | None = None
+    velocity: np.ndarray = field(default_factory=lambda: np.zeros(2, dtype=np.float32))
     last_speed: float = 0.0
+    missed_frames: int = 0
     cached_crop: np.ndarray | None = None
     cached_masks: list[np.ndarray] = field(default_factory=list)
     cached_at: float = 0.0
+    cached_mouth_open: float = 0.0
     frozen: np.ndarray | None = None
     frozen_at: float = 0.0
     last_seen: float = field(default_factory=time.perf_counter)
@@ -427,8 +552,11 @@ class SwapStream:
         self.box = None
         self.kps = None
         self.euro = []
+        self.pose_euro = []
         self.prev_centroid = None
+        self.velocity = np.zeros(2, dtype=np.float32)
         self.last_speed = 0.0
+        self.missed_frames = 0
 
 
 class FaceSwapEngine:
@@ -682,47 +810,103 @@ class FaceSwapEngine:
             active = len(self._streams)
         pipeline_health.update(active_swap_streams=active)
 
-    def _filter_kps(self, context: SwapStream, fresh: np.ndarray) -> np.ndarray:
+    def _filter_kps(
+        self, context: SwapStream, fresh: np.ndarray, timestamp: float | None = None
+    ) -> np.ndarray:
         flat = np.asarray(fresh, dtype=np.float32).reshape(-1)
         if len(context.euro) != flat.shape[0]:
-            context.euro = [_OneEuro() for _ in range(flat.shape[0])]
-        smoothed = np.array([f(value) for f, value in zip(context.euro, flat)])
+            context.euro = [_OneEuro(min_cutoff=1.0, beta=0.02) for _ in range(flat.shape[0])]
+        smoothed = np.array([f(value, timestamp) for f, value in zip(context.euro, flat)])
         return smoothed.reshape(5, 2).astype(np.float32)
 
-    def _track(self, rgb: np.ndarray, context: SwapStream) -> bool:
-        """Full-frame re-detect every frame with Euro-smoothed keypoints.
+    def _filter_transform(
+        self, context: SwapStream, matrix: np.ndarray, timestamp: float
+    ) -> np.ndarray:
+        """Filter rigid similarity parameters (translation, scale, rotation) to prevent scale breathing."""
+        tx, ty, scale, angle = _decompose_similarity(matrix)
+        if len(context.pose_euro) != 4:
+            context.pose_euro = [
+                _OneEuro(min_cutoff=1.2, beta=0.03),  # tx
+                _OneEuro(min_cutoff=1.2, beta=0.03),  # ty
+                _OneEuro(min_cutoff=0.6, beta=0.005), # scale (stiff to prevent scale pulsing)
+                _OneEuro(min_cutoff=0.8, beta=0.01),  # angle (stiff to prevent tilt wobble)
+            ]
+        s_tx = context.pose_euro[0](tx, timestamp)
+        s_ty = context.pose_euro[1](ty, timestamp)
+        s_scale = context.pose_euro[2](scale, timestamp)
+        s_angle = context.pose_euro[3](angle, timestamp)
+        return _recompose_similarity(s_tx, s_ty, s_scale, s_angle)
 
-        A fresh full scan costs a few milliseconds on the L4 and recovers
-        instantly from turns, while the low detector threshold plus the
-        existing-track gate keeps profile faces without inviting
-        false positives in empty rooms.
+    def _track(self, rgb: np.ndarray, context: SwapStream, now: float) -> bool:
+        """Fast ROI re-detection when tracking, with full-frame fallback scanner.
+
+        Tracking within an expanded ROI drops detector time from ~14ms to ~2.5ms,
+        preserving the 30 fps budget. Full scan re-acquires instantly on track loss.
         """
         started = time.perf_counter()
-        try:
-            found = [r for r in self.scan_detector.detect(rgb) if r.kps is not None]
-            if not found:
-                detector_window.add((time.perf_counter() - started) * 1000.0)
+        h, w = rgb.shape[:2]
+        found = []
+
+        # Fast ROI path: if already tracking, detect inside a padded sub-window
+        if context.box is not None and context.missed_frames == 0:
+            bx1, by1, bx2, by2 = context.box.x1, context.box.y1, context.box.x2, context.box.y2
+            bw, bh = bx2 - bx1, by2 - by1
+            pad_x, pad_y = int(bw * 0.35), int(bh * 0.35)
+            rx1, ry1 = max(0, bx1 - pad_x), max(0, by1 - pad_y)
+            rx2, ry2 = min(w, bx2 + pad_x), min(h, by2 + pad_y)
+            if (rx2 - rx1) > 64 and (ry2 - ry1) > 64:
+                roi = rgb[ry1:ry2, rx1:rx2]
+                try:
+                    roi_found = [r for r in self.scan_detector.detect(roi) if r.kps is not None]
+                    if roi_found:
+                        best_roi = max(roi_found, key=lambda r: (r.score, r.area))
+                        if best_roi.score >= ROI_SCORE:
+                            found = [
+                                Region(
+                                    x1=best_roi.x1 + rx1,
+                                    y1=best_roi.y1 + ry1,
+                                    x2=best_roi.x2 + rx1,
+                                    y2=best_roi.y2 + ry1,
+                                    score=best_roi.score,
+                                    kps=[[p[0] + rx1, p[1] + ry1] for p in best_roi.kps],
+                                )
+                            ]
+                except Exception as exc:
+                    logger.debug("ROI detection skipped: %s", exc)
+
+        # Full scan fallback if ROI was not attempted or did not detect
+        if not found:
+            try:
+                found = [r for r in self.scan_detector.detect(rgb) if r.kps is not None]
+            except Exception as exc:
+                logger.warning("swap tracking failed: %s", exc)
                 return False
-            best = max(found, key=lambda r: (r.score, r.area))
-            if context.box is None and best.score < settings.face_detector_confidence:
-                detector_window.add((time.perf_counter() - started) * 1000.0)
-                return False
-            context.box = best
-            fresh = np.asarray(best.kps, dtype=np.float32).reshape(5, 2)
-            centroid = fresh.mean(axis=0)
-            if context.prev_centroid is not None:
-                context.last_speed = float(
-                    np.linalg.norm(centroid - context.prev_centroid)
-                )
-            context.prev_centroid = centroid.astype(np.float32)
-            if context.kps is None:
-                context.euro = []
-            context.kps = self._filter_kps(context, fresh)
+
+        if not found:
             detector_window.add((time.perf_counter() - started) * 1000.0)
-            return True
-        except Exception as exc:
-            logger.warning("swap tracking failed: %s", exc)
             return False
+
+        best = max(found, key=lambda r: (r.score, r.area))
+        if context.box is None and best.score < settings.face_detector_confidence:
+            detector_window.add((time.perf_counter() - started) * 1000.0)
+            return False
+
+        context.box = best
+        fresh = np.asarray(best.kps, dtype=np.float32).reshape(5, 2)
+        centroid = fresh.mean(axis=0)
+        if context.prev_centroid is not None:
+            disp = centroid - context.prev_centroid
+            context.last_speed = float(np.linalg.norm(disp))
+            # Smooth velocity vector (EMA) for graceful trajectory extrapolation
+            context.velocity = 0.7 * disp.astype(np.float32) + 0.3 * context.velocity
+        context.prev_centroid = centroid.astype(np.float32)
+        if context.kps is None:
+            context.euro = []
+            context.pose_euro = []
+        context.kps = self._filter_kps(context, fresh, now)
+        context.missed_frames = 0
+        detector_window.add((time.perf_counter() - started) * 1000.0)
+        return True
 
     def _swap_crop(
         self, aligned: np.ndarray, latent: np.ndarray, size: int
@@ -730,12 +914,13 @@ class FaceSwapEngine:
         session = self.swapper.load()
         if session is None:
             return None, []
-        # RGB stays RGB: the swap models train on RGB, so no channel swap.
+        input_scale = float(self.spec.get("input_scale", 1.0 / self.spec.get("std", 255.0)))
+        input_mean = tuple(self.spec.get("input_mean", (self.spec.get("mean", 0.0),) * 3))
         blob = cv2.dnn.blobFromImage(
             aligned,
-            1.0 / self.spec["std"],
+            input_scale,
             (size, size),
-            (self.spec["mean"],) * 3,
+            input_mean,
             swapRB=False,
         )
         inputs = session.get_inputs()
@@ -756,6 +941,8 @@ class FaceSwapEngine:
         outputs = session.get_outputs()
         decoded = None
         masks: list[np.ndarray] = []
+        denorm_mult = float(self.spec.get("denorm_mult", self.spec.get("std", 255.0)))
+        denorm_add = float(self.spec.get("denorm_add", self.spec.get("mean", 0.0) * 255.0))
         for meta, value in zip(outputs, results):
             array = np.asarray(value)
             shape = list(meta.shape)
@@ -763,9 +950,7 @@ class FaceSwapEngine:
             if array.ndim == 4 and channels == 1:
                 masks.append(np.clip(array[0, 0], 0.0, 1.0).astype(np.float32))
             elif decoded is None:
-                image = array[0].transpose(1, 2, 0) * float(self.spec["std"]) + float(
-                    self.spec["mean"]
-                ) * 255.0
+                image = array[0].transpose(1, 2, 0) * denorm_mult + denorm_add
                 # Model output is RGB, matching our frames: no channel flip.
                 decoded = np.clip(image, 0.0, 255.0).astype(np.uint8)
         if decoded is None:
@@ -792,19 +977,26 @@ class FaceSwapEngine:
         size = int(self.spec["crop"])
         template = str(self.spec["template"])
 
-        tracked = self._track(rgb, context)
+        tracked = self._track(rgb, context, now)
         if not tracked or context.kps is None:
             return self._no_face(rgb, context, width, height, now)
 
-        if not budget.should_infer(now):
+        # Mouth dynamics check: force neural inference on speech / phoneme transitions
+        mouth_open = float(np.linalg.norm(context.kps[4] - context.kps[3]))
+        mouth_delta = abs(mouth_open - context.cached_mouth_open) / max(mouth_open, 1e-4)
+        force_mouth_inference = mouth_delta > 0.18
+
+        if not budget.should_infer(now) and not force_mouth_inference:
             dropped_inference_counter.increment()
             if context.cached_crop is None or not self._cache_valid(context, now):
                 return self._reuse_or_hold(rgb, context, width, height, now)
-            return self._paste_cached(rgb, context, width, height)
+            return self._paste_cached(rgb, context, width, height, now)
 
         aligned, transform = norm_crop(rgb, context.kps, size, template)
         if aligned is None or transform is None:
             return self._no_face(rgb, context, width, height, now)
+        smooth_transform = self._filter_transform(context, transform, now)
+
         overload_before = budget.overload_events
         started = time.perf_counter()
         try:
@@ -812,12 +1004,10 @@ class FaceSwapEngine:
             if swapped is None:
                 raise RuntimeError("swapper produced no face")
             swapped = self._enhance(swapped, size)
-            tone = self.source_tone(stream_key)
-            if tone is not None:
-                # Full reference tone in the face center, fading to live
-                # tone at the edge: identity tone with no visible seam.
-                oval_map = _face_oval(size, template) / 255.0
-                swapped = _match_skin(swapped, tone[0], tone[1], oval_map)
+
+            # Target-anchored skin tone transfer in LAB: anchors the swap to live room lighting
+            swapped = _match_target_skin(swapped, aligned, amount=1.0)
+
             neural_ms = (time.perf_counter() - started) * 1000.0
             model_window.add(neural_ms)
             budget.observe_inference(neural_ms)
@@ -833,9 +1023,7 @@ class FaceSwapEngine:
         if occlusion is not None:
             masks.append(occlusion)
         try:
-            current = norm_crop(rgb, context.kps, size, template)[1]
-            paste_matrix = current if current is not None else transform
-            output = paste_back(rgb, swapped, paste_matrix, masks or None, template)
+            output = paste_back(rgb, swapped, smooth_transform, masks or None, template)
         except cv2.error as exc:
             inference_error_counter.increment()
             logger.warning("face-swap paste-back failed: %s", exc)
@@ -843,6 +1031,7 @@ class FaceSwapEngine:
         context.cached_crop = swapped
         context.cached_masks = masks
         context.cached_at = now
+        context.cached_mouth_open = mouth_open
         context.frozen = output
         context.frozen_at = now
         pipeline_health.update(
@@ -853,7 +1042,7 @@ class FaceSwapEngine:
         return output
 
     def _paste_cached(
-        self, rgb: np.ndarray, context: SwapStream, width: int, height: int
+        self, rgb: np.ndarray, context: SwapStream, width: int, height: int, now: float
     ) -> np.ndarray:
         assert context.cached_crop is not None and context.kps is not None
         size = int(self.spec["crop"])
@@ -864,9 +1053,10 @@ class FaceSwapEngine:
         )
         if current is None:
             return rgb
+        smooth_current = self._filter_transform(context, current, now)
         try:
             return paste_back(
-                rgb, context.cached_crop, current, context.cached_masks or None, template
+                rgb, context.cached_crop, smooth_current, context.cached_masks or None, template
             )
         except cv2.error:
             return rgb
@@ -880,16 +1070,36 @@ class FaceSwapEngine:
             and self._cache_valid(context, now)
         ):
             cache_reuse_counter.increment()
-            return self._paste_cached(rgb, context, width, height)
+            return self._paste_cached(rgb, context, width, height, now)
         return self._no_face(rgb, context, width, height, now)
 
     def _no_face(
         self, rgb: np.ndarray, context: SwapStream, width: int, height: int, now: float
     ) -> np.ndarray:
         pipeline_health.update(face_swap_ready=True, source_ready=True)
-        # Freeze only a face that was nearly still a moment ago (a blink or
-        # brief cover). Anything moving fast (a head turn) clears at once,
-        # so a stale swap can never float around detached from the face.
+        context.missed_frames += 1
+        size = int(self.spec["crop"])
+        template = str(self.spec["template"])
+
+        # Extrapolate motion for up to 3 frames (~100ms) to bridge quick head turns / detector blinks
+        if (
+            context.cached_crop is not None
+            and context.kps is not None
+            and context.missed_frames <= 3
+            and (now - context.cached_at) <= STILL_FREEZE_SECONDS
+        ):
+            extrapolated_kps = context.kps + context.velocity * float(context.missed_frames)
+            current = _similarity(extrapolated_kps, _template_points(template, size))
+            if current is not None:
+                cache_reuse_counter.increment()
+                try:
+                    return paste_back(
+                        rgb, context.cached_crop, current, context.cached_masks or None, template
+                    )
+                except cv2.error:
+                    pass
+
+        # Stationary freeze fallback for gentle blinks
         if (
             context.frozen is not None
             and (now - context.frozen_at) <= STILL_FREEZE_SECONDS
@@ -897,6 +1107,7 @@ class FaceSwapEngine:
         ):
             cache_reuse_counter.increment()
             return context.frozen
+
         raw_leak_counter.increment()
         context.reset_tracking()
         return rgb

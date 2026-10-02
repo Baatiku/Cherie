@@ -20,8 +20,23 @@ try:
 
     _aiortc_h264.DEFAULT_BITRATE = 2_500_000
     _aiortc_vpx.DEFAULT_BITRATE = 1_200_000
+
+    # Ensure H264 software encoder is tuned strictly for zero latency (no B-frames, ultrafast preset)
+    if hasattr(_aiortc_h264, "H264Encoder"):
+        _orig_h264_encoder_init = _aiortc_h264.H264Encoder.__init__
+
+        def _patched_h264_encoder_init(self, *args, **kwargs):
+            _orig_h264_encoder_init(self, *args, **kwargs)
+            if hasattr(self, "codec") and self.codec is not None:
+                try:
+                    if hasattr(self.codec, "options") and isinstance(self.codec.options, dict):
+                        self.codec.options.update({"tune": "zerolatency", "preset": "ultrafast"})
+                except Exception:
+                    pass
+
+        _aiortc_h264.H264Encoder.__init__ = _patched_h264_encoder_init
 except Exception as exc:
-    logger.warning("aiortc bitrate defaults could not be raised: %s", exc)
+    logger.warning("aiortc bitrate and latency defaults could not be configured: %s", exc)
 
 from .frame_correlation import FrameCorrelator
 from .ice import current_ice_config

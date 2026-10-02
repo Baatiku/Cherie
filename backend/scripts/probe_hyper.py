@@ -134,7 +134,7 @@ def probe() -> dict:
         run_swapped = np.clip(
             run_out[0].transpose(1, 2, 0) * 0.5 + 127.5, 0, 255
         ).astype(np.uint8)
-        pasted = paste_back(target, run_swapped, transform, extra or None)
+        pasted = paste_back(target, run_swapped, transform, extra or None, "arcface_128")
         faces = [r for r in engine.detector.detect(pasted) if r.kps is not None]
         if not faces:
             report[label] = {"identity": None, "note": "no face detected in output"}

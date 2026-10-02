@@ -209,17 +209,20 @@ class _OneEuro:
         self.dx_prev = 0.0
 
 
-def _face_oval(size: int, template: str = "arcface_112") -> np.ndarray:
-    """Feathered face-shaped mask in aligned-crop space (no square edges)."""
+def _face_oval(size: int, template: str = "arcface_112", grow: float = 1.0) -> np.ndarray:
+    """Feathered face-shaped mask in aligned-crop space.
+
+    Sized to cover ears, forehead, jaw and beard zone with the edge
+    hiding in the hair. The template MUST match the crop's own template
+    or the mask lands pixels off the face, asymmetric side to side.
+    """
     dst = _template_points(template, size)
     left_eye, right_eye = dst[0], dst[1]
     eye_dist = float(np.linalg.norm(right_eye - left_eye)) + 1e-6
     cx = float((left_eye[0] + right_eye[0]) * 0.5)
-    # Generous oval: forehead to chin and cheek to cheek, so the whole
-    # face is swapped and the edge hides up in the hair, not mid-skin.
-    cy = float(left_eye[1] + eye_dist * 0.60)
-    rx = eye_dist * 1.25
-    ry = eye_dist * 1.70
+    cy = float(left_eye[1] + eye_dist * 0.62)
+    rx = eye_dist * 1.40 * grow
+    ry = eye_dist * 1.85 * grow
     yy, xx = np.mgrid[0:size, 0:size].astype(np.float32)
     oval = (((xx - cx) / rx) ** 2 + ((yy - cy) / ry) ** 2) <= 1.0
     mask = np.zeros((size, size), dtype=np.float32)
@@ -236,12 +239,15 @@ def paste_back(
     swapped: np.ndarray,
     transform: np.ndarray,
     extra_masks: list[np.ndarray] | None = None,
+    template: str = "arcface_112",
 ) -> np.ndarray:
     """Composite a swapped crop back into the full frame.
 
-    Warps only the affected face area (not the whole frame), inside an
-    eroded face oval multiplied by any extra masks (swapper / occlusion).
-    The full-strength swapped face goes through; masking never eats it.
+    Warps only the affected face area (not the whole frame). The mask is
+    the face oval times any extra masks (swapper / occlusion), with the
+    oval's core forced to full strength so an uneven occlusion cut can
+    never leave half a moustache behind. The full-strength swapped face
+    goes through; masking never eats it.
     """
     height, width = frame.shape[:2]
     size = int(swapped.shape[0])
@@ -267,12 +273,14 @@ def paste_back(
         flags=cv2.INTER_LINEAR,
         borderMode=cv2.BORDER_REPLICATE,
     )
-    alpha = _face_oval(size)
+    alpha = _face_oval(size, template)
     if extra_masks:
         for extra in extra_masks:
             if extra.shape[:2] != (size, size):
                 extra = cv2.resize(extra, (size, size), interpolation=cv2.INTER_LINEAR)
             alpha = alpha * np.clip(extra.astype(np.float32), 0.0, 1.0)
+    core = _face_oval(size, template, grow=0.72)
+    alpha = np.maximum(alpha, core)
     region_mask = cv2.warpAffine(
         alpha,
         local,
@@ -827,7 +835,7 @@ class FaceSwapEngine:
         try:
             current = norm_crop(rgb, context.kps, size, template)[1]
             paste_matrix = current if current is not None else transform
-            output = paste_back(rgb, swapped, paste_matrix, masks or None)
+            output = paste_back(rgb, swapped, paste_matrix, masks or None, template)
         except cv2.error as exc:
             inference_error_counter.increment()
             logger.warning("face-swap paste-back failed: %s", exc)
@@ -857,7 +865,9 @@ class FaceSwapEngine:
         if current is None:
             return rgb
         try:
-            return paste_back(rgb, context.cached_crop, current, context.cached_masks or None)
+            return paste_back(
+                rgb, context.cached_crop, current, context.cached_masks or None, template
+            )
         except cv2.error:
             return rgb
 

@@ -75,11 +75,12 @@ _ARCFACE_128 = np.array(
     dtype=np.float32,
 )
 
-# Freeze instead of leaking the real face: hold briefly, then freeze static.
-HOLD_SECONDS = 1.0
-FREEZE_SECONDS = 3.0
+# Freeze instead of leaking the real face: only when the face was nearly
+# still just before the loss (blink, brief cover). A fast-moving loss
+# (head turn) clears immediately, so no stale swap ever floats around.
+STILL_FREEZE_SECONDS = 0.5
+STILL_SPEED_PX = 3.0
 ROI_SCORE = 0.30
-ROI_MAX_SIDE = 320
 
 ENGINES = {
     "inswapper": {
@@ -214,9 +215,10 @@ def _face_oval(size: int, template: str = "arcface_112") -> np.ndarray:
     left_eye, right_eye = dst[0], dst[1]
     eye_dist = float(np.linalg.norm(right_eye - left_eye)) + 1e-6
     cx = float((left_eye[0] + right_eye[0]) * 0.5)
-    cy = float(left_eye[1] + eye_dist * 0.45)
-    rx = eye_dist * 0.95
-    ry = eye_dist * 1.30
+    # Biased downward so the jaw, chin and beard zone sit inside the swap.
+    cy = float(left_eye[1] + eye_dist * 0.55)
+    rx = eye_dist * 1.10
+    ry = eye_dist * 1.55
     yy, xx = np.mgrid[0:size, 0:size].astype(np.float32)
     oval = (((xx - cx) / rx) ** 2 + ((yy - cy) / ry) ** 2) <= 1.0
     mask = np.zeros((size, size), dtype=np.float32)
@@ -290,9 +292,16 @@ def paste_back(
 
 
 def _match_skin(
-    swapped: np.ndarray, ref_mean: np.ndarray, ref_std: np.ndarray, amount: float = 1.0
+    swapped: np.ndarray,
+    ref_mean: np.ndarray,
+    ref_std: np.ndarray,
+    amount: float | np.ndarray = 1.0,
 ) -> np.ndarray:
-    """Pull the swapped crop's skin tone toward the reference photo in LAB."""
+    """Pull the swapped crop's skin tone toward the reference photo in LAB.
+
+    Amount may be a per-pixel map: full reference tone in the face center
+    fading to live tone at the edge, so no visible seam rings the face.
+    """
     try:
         swapped_lab = cv2.cvtColor(swapped, cv2.COLOR_RGB2LAB).astype(np.float32)
         matched = np.empty_like(swapped_lab)
@@ -304,9 +313,12 @@ def _match_skin(
         matched_rgb = cv2.cvtColor(
             np.clip(matched, 0, 255).astype(np.uint8), cv2.COLOR_LAB2RGB
         )
+        weight = np.asarray(amount, dtype=np.float32)
+        if weight.ndim == 2:
+            weight = weight[..., None]
         blended = (
-            swapped.astype(np.float32) * (1.0 - amount)
-            + matched_rgb.astype(np.float32) * amount
+            swapped.astype(np.float32) * (1.0 - weight)
+            + matched_rgb.astype(np.float32) * weight
         )
         return np.clip(blended, 0, 255).astype(np.uint8)
     except cv2.error:
@@ -388,14 +400,13 @@ class SwapStream:
     kps: np.ndarray | None = None
     euro: list[_OneEuro] = field(default_factory=list)
     frame_index: int = 0
-    last_full_detect: int = -10_000
-    roi_misses: int = 0
+    prev_centroid: np.ndarray | None = None
+    last_speed: float = 0.0
     cached_crop: np.ndarray | None = None
     cached_masks: list[np.ndarray] = field(default_factory=list)
     cached_at: float = 0.0
     frozen: np.ndarray | None = None
     frozen_at: float = 0.0
-    last_good_at: float = 0.0
     last_seen: float = field(default_factory=time.perf_counter)
 
     def configure(self, profile_name: str) -> None:
@@ -407,7 +418,8 @@ class SwapStream:
         self.box = None
         self.kps = None
         self.euro = []
-        self.roi_misses = 0
+        self.prev_centroid = None
+        self.last_speed = 0.0
 
 
 class FaceSwapEngine:
@@ -417,7 +429,10 @@ class FaceSwapEngine:
 
     def __init__(self, detector=None, swapper_engine: str | None = None):
         self.detector = detector or build_region_detector(max_regions=1)
-        self.roi_detector = ScrfdFaceDetector(
+        # Low-threshold full-frame scanner: catches profile and partial
+        # faces the strict detector would miss. Seeding a brand-new track
+        # still needs a confident hit (see _track).
+        self.scan_detector = ScrfdFaceDetector(
             settings.face_detector_model,
             confidence=ROI_SCORE,
             nms_threshold=settings.face_detector_nms,
@@ -665,77 +680,40 @@ class FaceSwapEngine:
         smoothed = np.array([f(value) for f, value in zip(context.euro, flat)])
         return smoothed.reshape(5, 2).astype(np.float32)
 
-    def _roi_detect(self, rgb: np.ndarray, box: Region | None) -> list[Region]:
-        """Cheap every-frame re-detect inside the last box; empty on a miss."""
-        height, width = rgb.shape[:2]
-        if box is None:
-            return []
-        pad = 0.30
-        x0 = max(0, int(box.x - box.width * pad))
-        y0 = max(0, int(box.y - box.height * pad))
-        x1 = min(width, int(box.x + box.width * (1.0 + pad)))
-        y1 = min(height, int(box.y + box.height * (1.0 + pad)))
-        if x1 - x0 < 24 or y1 - y0 < 24:
-            return []
-        crop = rgb[y0:y1, x0:x1]
-        longest = max(x1 - x0, y1 - y0)
-        scale = min(1.0, ROI_MAX_SIDE / float(longest))
-        small = crop
-        if scale < 1.0:
-            small = cv2.resize(
-                crop,
-                (max(8, int((x1 - x0) * scale)), max(8, int((y1 - y0) * scale))),
-                interpolation=cv2.INTER_AREA,
-            )
-        found = [r for r in self.roi_detector.detect(small) if r.kps is not None]
-        mapped = []
-        for region in found:
-            kps = tuple(
-                (x0 + px / scale, y0 + py / scale) for px, py in (region.kps or [])
-            )
-            mapped.append(
-                Region(
-                    int(round(x0 + region.x / scale)),
-                    int(round(y0 + region.y / scale)),
-                    int(round(region.width / scale)),
-                    int(round(region.height / scale)),
-                    region.score,
-                    kps,
-                )
-            )
-        return mapped
+    def _track(self, rgb: np.ndarray, context: SwapStream) -> bool:
+        """Full-frame re-detect every frame with Euro-smoothed keypoints.
 
-    def _track(self, rgb: np.ndarray, context: SwapStream, budget) -> bool:
-        """Update box+kps: ROI re-detect first, full frame to recover."""
+        A fresh full scan costs a few milliseconds on the L4 and recovers
+        instantly from turns, while the low detector threshold plus the
+        existing-track gate keeps profile faces without inviting
+        false positives in empty rooms.
+        """
         started = time.perf_counter()
         try:
-            found = self._roi_detect(rgb, context.box)
-            if found:
-                best = max(found, key=lambda r: (r.score, r.area))
-                context.box = best
-                context.kps = self._filter_kps(context, np.asarray(best.kps))
-                context.roi_misses = 0
+            found = [r for r in self.scan_detector.detect(rgb) if r.kps is not None]
+            if not found:
                 detector_window.add((time.perf_counter() - started) * 1000.0)
-                return True
-            context.roi_misses += 1
-            frames_since_full = context.frame_index - context.last_full_detect
-            if context.roi_misses >= 2 or frames_since_full >= budget.detector_interval:
-                full = [r for r in self.detector.detect(rgb) if r.kps is not None]
-                context.last_full_detect = context.frame_index
-                if full:
-                    best = max(full, key=lambda r: (r.score, r.area))
-                    context.box = best
-                    if context.roi_misses >= 2:
-                        context.euro = []
-                    context.kps = self._filter_kps(context, np.asarray(best.kps))
-                    context.roi_misses = 0
-                    detector_window.add((time.perf_counter() - started) * 1000.0)
-                    return True
+                return False
+            best = max(found, key=lambda r: (r.score, r.area))
+            if context.box is None and best.score < settings.face_detector_confidence:
+                detector_window.add((time.perf_counter() - started) * 1000.0)
+                return False
+            context.box = best
+            fresh = np.asarray(best.kps, dtype=np.float32).reshape(5, 2)
+            centroid = fresh.mean(axis=0)
+            if context.prev_centroid is not None:
+                context.last_speed = float(
+                    np.linalg.norm(centroid - context.prev_centroid)
+                )
+            context.prev_centroid = centroid.astype(np.float32)
+            if context.kps is None:
+                context.euro = []
+            context.kps = self._filter_kps(context, fresh)
             detector_window.add((time.perf_counter() - started) * 1000.0)
-            return context.kps is not None
+            return True
         except Exception as exc:
             logger.warning("swap tracking failed: %s", exc)
-            return context.kps is not None
+            return False
 
     def _swap_crop(
         self, aligned: np.ndarray, latent: np.ndarray, size: int
@@ -805,7 +783,7 @@ class FaceSwapEngine:
         size = int(self.spec["crop"])
         template = str(self.spec["template"])
 
-        tracked = self._track(rgb, context, budget)
+        tracked = self._track(rgb, context)
         if not tracked or context.kps is None:
             return self._no_face(rgb, context, width, height, now)
 
@@ -827,7 +805,10 @@ class FaceSwapEngine:
             swapped = self._enhance(swapped, size)
             tone = self.source_tone(stream_key)
             if tone is not None:
-                swapped = _match_skin(swapped, tone[0], tone[1])
+                # Full reference tone in the face center, fading to live
+                # tone at the edge: identity tone with no visible seam.
+                oval_map = _face_oval(size, template) / 255.0
+                swapped = _match_skin(swapped, tone[0], tone[1], oval_map)
             neural_ms = (time.perf_counter() - started) * 1000.0
             model_window.add(neural_ms)
             budget.observe_inference(neural_ms)
@@ -855,7 +836,6 @@ class FaceSwapEngine:
         context.cached_at = now
         context.frozen = output
         context.frozen_at = now
-        context.last_good_at = now
         pipeline_health.update(
             face_swap_ready=True,
             source_ready=True,
@@ -896,8 +876,13 @@ class FaceSwapEngine:
         self, rgb: np.ndarray, context: SwapStream, width: int, height: int, now: float
     ) -> np.ndarray:
         pipeline_health.update(face_swap_ready=True, source_ready=True)
-        if context.frozen is not None and (now - context.frozen_at) <= (
-            HOLD_SECONDS + FREEZE_SECONDS
+        # Freeze only a face that was nearly still a moment ago (a blink or
+        # brief cover). Anything moving fast (a head turn) clears at once,
+        # so a stale swap can never float around detached from the face.
+        if (
+            context.frozen is not None
+            and (now - context.frozen_at) <= STILL_FREEZE_SECONDS
+            and context.last_speed <= STILL_SPEED_PX
         ):
             cache_reuse_counter.increment()
             return context.frozen

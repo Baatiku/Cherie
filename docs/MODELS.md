@@ -29,23 +29,27 @@ OMNILIVE_ARCFACE_MODEL=recognition/w600k_r50.onnx
 
 How it works per live frame:
 
-1. the detector finds the face and its 5 keypoints; between full scans
-   it re-detects inside a small region around the last face every frame,
+1. the detector scans the full frame every pass (a low threshold
+   catches turned faces; starting a new track needs a confident hit),
    and the points pass through a low-lag smoothing filter
 2. the face is aligned to the ArcFace template (exact least-squares,
    no RANSAC, so the mouth cannot land twice)
 3. the swapper paints the reference identity onto the aligned crop
    (about 5ms on the L4), then an enhancer sharpens it and the crop
-   takes on the reference photo's skin tone
+   takes on the reference photo's skin tone — full tone in the face
+   center fading to live tone at the edge, so no seam rings the face
 4. the full-strength swapped face is warped back into the frame inside a
-   face-shaped oval mask, with hands and glasses kept real by an
+   wide face-shaped oval mask (jaw, chin and beard zone included),
+   with hands and glasses kept real by an
    occlusion mask — no square borders, and masking never eats the
    identity itself
 
 Between swap slots the last swapped crop is re-pasted at the current
 face position, so output stays at camera frame rate. If the face is
-briefly lost, the last swapped frame freezes instead of flashing the
-real face; raw fall-through is counted as a safety bug. A reference photo
+lost while nearly still, the last swapped frame freezes briefly
+instead of flashing the real face; a fast-moving loss (a head turn)
+clears at once so no stale swap ever floats detached, and every raw
+fall-through is counted. A reference photo
 with a clear detectable face is required; without one the frame passes
 through untouched. Provision the weights with:
 

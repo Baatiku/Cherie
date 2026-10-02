@@ -10,6 +10,19 @@ from aiortc.mediastreams import MediaStreamError
 
 logger = logging.getLogger("omnilive.webrtc")
 
+try:
+    # aiortc encodes the returned video at 1 Mbps (H264) / 500 kbps (VP8)
+    # by default, which alone makes 720p look soft and blocky no matter
+    # how good the swap is. Raise the starting point; the built-in
+    # receiver-driven adaptation can still turn it down on congestion.
+    from aiortc.codecs import h264 as _aiortc_h264
+    from aiortc.codecs import vpx as _aiortc_vpx
+
+    _aiortc_h264.DEFAULT_BITRATE = 2_500_000
+    _aiortc_vpx.DEFAULT_BITRATE = 1_200_000
+except Exception as exc:
+    logger.warning("aiortc bitrate defaults could not be raised: %s", exc)
+
 from .frame_correlation import FrameCorrelator
 from .ice import current_ice_config
 from .models import WebRtcAnswer, WebRtcOffer

@@ -41,6 +41,24 @@ FILES = {
         "https://huggingface.co/hacksider/deep-live-cam"
         "/resolve/main/inswapper_128_fp16.onnx",
     ],
+    # 256px swappers A/B/C (FaceFusion official pack, fp32 ~403MB each).
+    "swapper/hyperswap_1a_256.onnx": [
+        "https://huggingface.co/facefusion/models-3.3.0"
+        "/resolve/main/hyperswap_1a_256.onnx",
+    ],
+    "swapper/hyperswap_1b_256.onnx": [
+        "https://huggingface.co/facefusion/models-3.3.0"
+        "/resolve/main/hyperswap_1b_256.onnx",
+    ],
+    "swapper/hyperswap_1c_256.onnx": [
+        "https://huggingface.co/facefusion/models-3.3.0"
+        "/resolve/main/hyperswap_1c_256.onnx",
+    ],
+    # Face occluder (hands, glasses) for the paste mask.
+    "occluder/xseg_2.onnx": [
+        "https://huggingface.co/facefusion/models-3.1.0"
+        "/resolve/main/xseg_2.onnx",
+    ],
     # 256px blind face-restoration enhancer (FaceFusion pack first).
     "enhancer/gpen_bfr_256.onnx": [
         "https://huggingface.co/facefusion/models-3.0.0"
@@ -86,29 +104,44 @@ def fetch() -> dict:
     import onnx
     from onnx import numpy_helper
 
-    swapper_path = os.path.join(MODEL_ROOT, "swapper/inswapper_128_fp16.onnx")
-    model = onnx.load(swapper_path)
-    emap = numpy_helper.to_array(model.graph.initializer[-1])
-    report["swapper"]["emap_shape"] = list(emap.shape)
-    report["swapper"]["emap_dtype"] = str(emap.dtype)
+    try:
+        swapper_path = os.path.join(MODEL_ROOT, "swapper/inswapper_128_fp16.onnx")
+        model = onnx.load(swapper_path)
+        emap = numpy_helper.to_array(model.graph.initializer[-1])
+        report["swapper"]["emap_shape"] = list(emap.shape)
+        report["swapper"]["emap_dtype"] = str(emap.dtype)
+    except Exception as exc:
+        report["swapper"]["emap_error"] = str(exc)[:200]
 
     import onnxruntime as ort
 
-    for label, relative, key in (
-        ("swapper", "swapper/inswapper_128_fp16.onnx", "swapper"),
-        ("detector", "detectors/det_10g.onnx", "detector"),
-        ("arcface", "recognition/w600k_r50.onnx", "arcface"),
-    ):
-        session = ort.InferenceSession(
-            os.path.join(MODEL_ROOT, relative), providers=["CPUExecutionProvider"]
-        )
-        report[key]["inputs"] = [
-            {"name": i.name, "shape": [str(d) for d in i.shape], "type": i.type}
-            for i in session.get_inputs()
-        ]
-        report[key]["outputs"] = [
-            {"name": o.name, "shape": [str(d) for d in o.shape], "type": o.type}
-            for o in session.get_outputs()
-        ]
+    inspect = {
+        "swapper": "swapper/inswapper_128_fp16.onnx",
+        "hyper1a": "swapper/hyperswap_1a_256.onnx",
+        "hyper1b": "swapper/hyperswap_1b_256.onnx",
+        "hyper1c": "swapper/hyperswap_1c_256.onnx",
+        "xseg": "occluder/xseg_2.onnx",
+        "detector": "detectors/det_10g.onnx",
+        "arcface": "recognition/w600k_r50.onnx",
+    }
+    for key, relative in inspect.items():
+        path = os.path.join(MODEL_ROOT, relative)
+        if not os.path.isfile(path):
+            report[key] = {"status": "missing"}
+            continue
+        try:
+            session = ort.InferenceSession(path, providers=["CPUExecutionProvider"])
+            report[key] = {
+                "inputs": [
+                    {"name": i.name, "shape": [str(d) for d in i.shape], "type": i.type}
+                    for i in session.get_inputs()
+                ],
+                "outputs": [
+                    {"name": o.name, "shape": [str(d) for d in o.shape], "type": o.type}
+                    for o in session.get_outputs()
+                ],
+            }
+        except Exception as exc:
+            report[key] = {"status": "inspect_failed", "detail": str(exc)[:200]}
     print(report)
     return report

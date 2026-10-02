@@ -69,6 +69,12 @@ class Settings:
         "OMNILIVE_ENHANCER_MODEL", "enhancer/gpen_bfr_256.onnx"
     )
     enhancer_enabled: bool = _bool("OMNILIVE_ENHANCER_ENABLED", True)
+    enhancer_strength: float = float(os.getenv("OMNILIVE_ENHANCER_STRENGTH", "0.4"))
+    swapper_engine: str = os.getenv("OMNILIVE_SWAPPER_ENGINE", "inswapper").strip().lower()
+    xseg_model: str = os.getenv(
+        "OMNILIVE_XSEG_MODEL", "occluder/xseg_2.onnx"
+    )
+    xseg_enabled: bool = _bool("OMNILIVE_XSEG_ENABLED", True)
     region_padding: float = float(os.getenv("OMNILIVE_REGION_PADDING", "0.22"))
     tracker_min_confidence: float = float(os.getenv("OMNILIVE_TRACKER_MIN_CONFIDENCE", "0.22"))
     processor_context_ttl_seconds: int = int(os.getenv("OMNILIVE_PROCESSOR_CONTEXT_TTL_SECONDS", "30"))

@@ -52,6 +52,7 @@ from .telemetry import (
     overload_event_counter,
     pipeline_health,
     processor_window,
+    raw_leak_counter,
     tracker_window,
     tracking_reset_counter,
 )
@@ -357,6 +358,7 @@ def telemetry_payload():
         "frame_correlation_out_of_order": frame_correlation_out_of_order_counter.value,
         "frame_timing_publish_drops": frame_timing_publish_drop_counter.value,
         "model_recovery_skips": model_recovery_skip_counter.value,
+        "raw_frame_leaks": raw_leak_counter.value,
         "active_sessions": registry.count(),
         "max_sessions": settings.max_sessions,
         "stages": {
@@ -416,6 +418,8 @@ def prometheus_payload() -> str:
         _metric_line("omnilive_inference_errors_total", payload["inference_errors"]),
         "# TYPE omnilive_model_recovery_skips_total counter",
         _metric_line("omnilive_model_recovery_skips_total", payload["model_recovery_skips"]),
+        "# TYPE omnilive_raw_frame_leaks_total counter",
+        _metric_line("omnilive_raw_frame_leaks_total", payload["raw_frame_leaks"]),
         "# TYPE omnilive_model_recovering gauge",
         _metric_line("omnilive_model_recovering", 1 if payload.get("recovering") else 0),
         "# TYPE omnilive_model_recovery_count counter",

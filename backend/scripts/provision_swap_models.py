@@ -27,20 +27,27 @@ app = modal.App("omnilive-model-provision")
 
 FILES = {
     # SCRFD-10G detector with keypoints (official buffalo_l pack mirror).
-    "detectors/det_10g.onnx": (
+    "detectors/det_10g.onnx": [
         "https://huggingface.co/public-data/insightface"
-        "/resolve/main/models/buffalo_l/det_10g.onnx"
-    ),
+        "/resolve/main/models/buffalo_l/det_10g.onnx",
+    ],
     # ArcFace ResNet50 identity encoder (official buffalo_l pack mirror).
-    "recognition/w600k_r50.onnx": (
+    "recognition/w600k_r50.onnx": [
         "https://huggingface.co/public-data/insightface"
-        "/resolve/main/models/buffalo_l/w600k_r50.onnx"
-    ),
+        "/resolve/main/models/buffalo_l/w600k_r50.onnx",
+    ],
     # 128px real-time swapper, fp16 (ships in a live-cam project).
-    "swapper/inswapper_128_fp16.onnx": (
+    "swapper/inswapper_128_fp16.onnx": [
         "https://huggingface.co/hacksider/deep-live-cam"
-        "/resolve/main/inswapper_128_fp16.onnx"
-    ),
+        "/resolve/main/inswapper_128_fp16.onnx",
+    ],
+    # 256px blind face-restoration enhancer (FaceFusion pack first).
+    "enhancer/gpen_bfr_256.onnx": [
+        "https://huggingface.co/facefusion/models-3.0.0"
+        "/resolve/main/gpen_bfr_256.onnx",
+        "https://huggingface.co/hacksider/deep-live-cam"
+        "/resolve/main/GPEN-BFR-256.onnx",
+    ],
 }
 
 
@@ -50,16 +57,29 @@ def fetch() -> dict:
     import urllib.request
 
     report: dict = {"files": {}, "swapper": {}, "detector": {}, "arcface": {}}
-    for relative, url in FILES.items():
+    for relative, urls in FILES.items():
         dest = os.path.join(MODEL_ROOT, relative)
         os.makedirs(os.path.dirname(dest), exist_ok=True)
         if os.path.isfile(dest) and os.path.getsize(dest) > 1_000_000:
             report["files"][relative] = {"status": "already_present", "bytes": os.path.getsize(dest)}
             continue
-        tmp = dest + ".part"
-        urllib.request.urlretrieve(url, tmp)
-        os.replace(tmp, dest)
-        report["files"][relative] = {"status": "downloaded", "bytes": os.path.getsize(dest)}
+        downloaded = False
+        last_error = ""
+        for url in urls:
+            try:
+                tmp = dest + ".part"
+                urllib.request.urlretrieve(url, tmp)
+                if os.path.getsize(tmp) > 1_000_000:
+                    os.replace(tmp, dest)
+                    downloaded = True
+                    break
+                last_error = "download too small"
+            except Exception as exc:
+                last_error = str(exc)[:200]
+        if downloaded:
+            report["files"][relative] = {"status": "downloaded", "bytes": os.path.getsize(dest)}
+        else:
+            report["files"][relative] = {"status": "failed", "detail": last_error}
     model_volume.commit()
 
     import numpy as np

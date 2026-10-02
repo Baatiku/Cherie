@@ -45,6 +45,12 @@ from .vision import build_region_detector, resolve_vision_model_path
 
 logger = logging.getLogger("omnilive.faceswap")
 
+# How long a swapped frame may be held on screen while tracking briefly
+# loses the face, instead of flashing the real face. Longer than the
+# detector gap (~200-400ms) but short enough that a truly gone face
+# clears quickly.
+SWAP_HOLD_SECONDS = 0.8
+
 # ArcFace canonical 5-point template at 112px (left eye, right eye, nose,
 # mouth-left, mouth-right). Scaled to the requested crop size.
 _ARCFACE_DST_112 = np.array(
@@ -59,13 +65,41 @@ _ARCFACE_DST_112 = np.array(
 )
 
 
+def _similarity(src5: np.ndarray, dst5: np.ndarray) -> np.ndarray | None:
+    """Exact least-squares similarity transform (Umeyama, no RANSAC).
+
+    Estimates scale + rotation + translation from all 5 points at once.
+    RANSAC-based estimators can lock onto a degenerate 3-point subset and
+    tilt the whole alignment, which pastes the swapped mouth in the wrong
+    place (the classic "two mouths" artifact).
+    """
+    src = np.asarray(src5, dtype=np.float64).reshape(5, 2)
+    dst = np.asarray(dst5, dtype=np.float64).reshape(5, 2)
+    mu_src = src.mean(axis=0)
+    mu_dst = dst.mean(axis=0)
+    centered_src = src - mu_src
+    centered_dst = dst - mu_dst
+    variance = float((centered_src**2).sum() / 5.0)
+    if variance < 1e-9:
+        return None
+    cov = (centered_dst.T @ centered_src) / 5.0
+    left, singular, right_t = np.linalg.svd(cov)
+    reflect = np.eye(2)
+    if np.linalg.det(left) * np.linalg.det(right_t) < 0:
+        reflect[1, 1] = -1
+    rotation = left @ reflect @ right_t
+    scale = float(((singular * np.diag(reflect)).sum()) / variance)
+    if not np.isfinite(scale) or scale <= 0:
+        return None
+    translation = mu_dst - scale * (rotation @ mu_src)
+    matrix = np.hstack([scale * rotation, translation.reshape(2, 1)])
+    return matrix.astype(np.float32)
+
+
 def norm_crop(img: np.ndarray, kps: np.ndarray, image_size: int = 128):
     """Align a face to the ArcFace template (InsightFace norm_crop2)."""
-    scale = float(image_size) / 112.0
-    dst = _ARCFACE_DST_112 * scale
-    transform, _ = cv2.estimateAffinePartial2D(
-        np.asarray(kps, dtype=np.float32).reshape(5, 2), dst
-    )
+    dst = (_ARCFACE_DST_112 * (float(image_size) / 112.0)).astype(np.float32)
+    transform = _similarity(np.asarray(kps, dtype=np.float32).reshape(5, 2), dst)
     if transform is None:
         return None, None
     warped = cv2.warpAffine(
@@ -76,12 +110,26 @@ def norm_crop(img: np.ndarray, kps: np.ndarray, image_size: int = 128):
         borderMode=cv2.BORDER_CONSTANT,
         borderValue=0.0,
     )
-    return warped, transform.astype(np.float32)
+    return warped, transform
 
 
-def paste_back(frame: np.ndarray, swapped: np.ndarray, transform: np.ndarray) -> np.ndarray:
-    """Inverse-warp a swapped 128px crop into the full frame with a soft mask."""
+def paste_back(
+    frame: np.ndarray,
+    swapped: np.ndarray,
+    transform: np.ndarray,
+    raw: np.ndarray | None = None,
+    aligned_orig: np.ndarray | None = None,
+) -> np.ndarray:
+    """Composite a swapped 128px crop back into the full frame.
+
+    InsightFace-style change masking: only pixels the swap actually
+    changed get pasted. Unchanged areas (and the target's own mouth
+    interior, which the swapper preserves) stay exactly as the camera
+    saw them, so a small alignment wobble can never print a second
+    mouth next to the real one.
+    """
     height, width = frame.shape[:2]
+    size = int(swapped.shape[0])
     inverse = cv2.invertAffineTransform(transform)
     back = cv2.warpAffine(
         swapped,
@@ -91,9 +139,26 @@ def paste_back(frame: np.ndarray, swapped: np.ndarray, transform: np.ndarray) ->
         borderMode=cv2.BORDER_CONSTANT,
         borderValue=0.0,
     )
-    size = int(swapped.shape[0])
+    if raw is not None and aligned_orig is not None:
+        diff_source, diff_target = raw, aligned_orig
+    else:
+        diff_source, diff_target = swapped, cv2.warpAffine(
+            frame,
+            transform,
+            (size, size),
+            flags=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=0.0,
+        )
+    diff = np.abs(
+        diff_source.astype(np.float32) - diff_target.astype(np.float32)
+    ).mean(axis=2)
+    diff[:2, :] = 0
+    diff[-2:, :] = 0
+    diff[:, :2] = 0
+    diff[:, -2:] = 0
     white = np.full((size, size), 255, dtype=np.float32)
-    mask = cv2.warpAffine(
+    face_mask = cv2.warpAffine(
         white,
         inverse,
         (width, height),
@@ -101,15 +166,67 @@ def paste_back(frame: np.ndarray, swapped: np.ndarray, transform: np.ndarray) ->
         borderMode=cv2.BORDER_CONSTANT,
         borderValue=0.0,
     )
-    mask[mask > 20.0] = 255.0
-    kernel = max(5, int(round(min(height, width) / 90.0)))
+    face_mask[face_mask > 20.0] = 255.0
+    ys, xs = np.where(face_mask == 255.0)
+    if len(xs) > 0:
+        extent = int(max(xs.max() - xs.min(), ys.max() - ys.min()))
+        kernel = max(int(round(extent / 12.0)), 7)
+    else:
+        kernel = 11
     if kernel % 2 == 0:
         kernel += 1
-    mask = cv2.erode(mask, np.ones((kernel, kernel), np.uint8))
-    mask = cv2.GaussianBlur(mask, (0, 0), sigmaX=float(kernel))
-    alpha = (np.clip(mask, 0.0, 255.0) / 255.0)[..., None]
+    face_mask = cv2.erode(face_mask, np.ones((kernel, kernel), np.uint8))
+    change = cv2.warpAffine(
+        diff,
+        inverse,
+        (width, height),
+        flags=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=0.0,
+    )
+    change[change < 10.0] = 0.0
+    change[change >= 10.0] = 255.0
+    change = cv2.dilate(change, np.ones((3, 3), np.uint8))
+    smooth = max(kernel // 2, 5)
+    if smooth % 2 == 0:
+        smooth += 1
+    face_mask = cv2.GaussianBlur(face_mask, (0, 0), sigmaX=float(smooth))
+    change = cv2.GaussianBlur(change, (0, 0), sigmaX=5.0)
+    alpha = (
+        np.clip(face_mask, 0.0, 255.0) / 255.0
+        * np.clip(change, 0.0, 255.0) / 255.0
+    )[..., None]
     merged = frame.astype(np.float32) * (1.0 - alpha) + back.astype(np.float32) * alpha
     return np.clip(merged, 0, 255).astype(np.uint8)
+
+
+def _match_skin(target: np.ndarray, swapped: np.ndarray, amount: float = 0.5) -> np.ndarray:
+    """Pull the swapped crop's skin tone toward the live face in LAB space.
+
+    LAB separates brightness from color, so this fixes the classic
+    too-pale/too-dark pasted-face look without washing out identity.
+    Only half-applied to protect the swapped identity.
+    """
+    try:
+        target_lab = cv2.cvtColor(target, cv2.COLOR_RGB2LAB).astype(np.float32)
+        swapped_lab = cv2.cvtColor(swapped, cv2.COLOR_RGB2LAB).astype(np.float32)
+        matched = np.empty_like(swapped_lab)
+        for channel in range(3):
+            src = swapped_lab[..., channel]
+            dst = target_lab[..., channel]
+            matched[..., channel] = (src - float(src.mean())) * (
+                (float(dst.std()) + 5.0) / (float(src.std()) + 5.0)
+            ) + float(dst.mean())
+        matched_rgb = cv2.cvtColor(
+            np.clip(matched, 0, 255).astype(np.uint8), cv2.COLOR_LAB2RGB
+        )
+        blended = (
+            swapped.astype(np.float32) * (1.0 - amount)
+            + matched_rgb.astype(np.float32) * amount
+        )
+        return np.clip(blended, 0, 255).astype(np.uint8)
+    except cv2.error:
+        return swapped
 
 
 class _LazySwapSession:
@@ -206,6 +323,7 @@ class FaceSwapEngine:
         self.detector = detector or build_region_detector(max_regions=1)
         self.swapper = _LazySwapSession(settings.swapper_model)
         self.arcface = _LazySwapSession(settings.arcface_model)
+        self.enhancer = _LazySwapSession(settings.enhancer_model)
         self._emap: np.ndarray | None = None
         self._sources: dict[str, np.ndarray] = {}
         self._streams: dict[str, SwapStream] = {}
@@ -216,6 +334,33 @@ class FaceSwapEngine:
     @property
     def available(self) -> bool:
         return self.swapper.configured_file_exists and self.arcface.configured_file_exists
+
+    @property
+    def enhancer_enabled(self) -> bool:
+        return bool(settings.enhancer_enabled) and self.enhancer.configured_file_exists
+
+    def _enhance(self, rgb128: np.ndarray) -> np.ndarray:
+        """Optional detail pass (GPEN blind restoration). Never breaks a frame."""
+        if not self.enhancer_enabled:
+            return rgb128
+        try:
+            session = self.enhancer.load()
+            if session is None:
+                return rgb128
+            up = cv2.resize(rgb128, (256, 256), interpolation=cv2.INTER_CUBIC)
+            blob = (up.astype(np.float32) / 127.5 - 1.0).transpose(2, 0, 1)[None, ...]
+            meta = session.get_inputs()[0]
+            with self._infer_lock:
+                out = np.asarray(session.run(None, {meta.name: blob})[0])
+            enhanced = np.clip((out[0].transpose(1, 2, 0) + 1.0) * 127.5, 0, 255)
+            if not np.isfinite(float(enhanced.mean())):
+                return rgb128
+            if float(enhanced.mean()) < 5.0 or float(enhanced.mean()) > 250.0:
+                return rgb128
+            return cv2.resize(enhanced.astype(np.uint8), (128, 128), interpolation=cv2.INTER_AREA)
+        except Exception as exc:
+            logger.warning("face enhancer skipped: %s", exc)
+            return rgb128
 
     def _emap_matrix(self) -> np.ndarray | None:
         if self._emap is not None:
@@ -348,6 +493,42 @@ class FaceSwapEngine:
         ttl_ms = profile_defaults(context.profile_name).cache_ttl_ms
         return (now - context.cached_at) * 1000.0 <= ttl_ms
 
+    def _held_frame(
+        self, context: SwapStream, width: int, height: int, now: float
+    ) -> np.ndarray | None:
+        """Last swapped frame, briefly held while tracking is lost.
+
+        Returning this instead of the untouched camera frame stops the
+        real face flashing through on every detector/tracker gap.
+        """
+        if context.cached is None:
+            return None
+        if (now - context.cached_at) > SWAP_HOLD_SECONDS:
+            return None
+        cache_reuse_counter.increment()
+        transform = context.tracker.last_transform
+        if transform is not None:
+            try:
+                return cv2.warpAffine(
+                    context.cached, transform, (width, height), flags=cv2.INTER_LINEAR
+                )
+            except cv2.error:
+                pass
+        return context.cached
+
+    @staticmethod
+    def _near_still(transform: np.ndarray | None) -> bool:
+        """True when the face barely moved: reuse the cached frame untouched.
+
+        Warping by a sub-pixel transform every frame makes edges shimmer;
+        a still face gets the identical array back (zero wobble).
+        """
+        if transform is None:
+            return True
+        tx, ty = float(transform[0, 2]), float(transform[1, 2])
+        scale = float(np.linalg.norm(transform[:, :2]) / np.sqrt(2.0))
+        return abs(tx) < 0.75 and abs(ty) < 0.75 and abs(scale - 1.0) < 0.01
+
     def process_frame(
         self, rgb: np.ndarray, stream_key: str, profile: QualityProfile
     ) -> np.ndarray:
@@ -402,16 +583,20 @@ class FaceSwapEngine:
 
         if context.kps is None:
             pipeline_health.update(face_swap_ready=True, source_ready=True)
-            return rgb
+            held = self._held_frame(context, width, height, now)
+            return held if held is not None else rgb
 
         if not budget.should_infer(now):
             dropped_inference_counter.increment()
             if not self._cache_valid(context, now):
-                return rgb
+                held = self._held_frame(context, width, height, now)
+                return held if held is not None else rgb
             cache_reuse_counter.increment()
             cached = context.cached
             assert cached is not None
             transform = context.tracker.last_transform
+            if self._near_still(transform):
+                return cached
             if transform is not None:
                 try:
                     return cv2.warpAffine(cached, transform, (width, height), flags=cv2.INTER_LINEAR)
@@ -434,29 +619,32 @@ class FaceSwapEngine:
                 pred = np.asarray(
                     session.run(None, {inputs[0].name: blob, inputs[1].name: latent})[0]
                 )
-            model_ms = (time.perf_counter() - started) * 1000.0
-            model_window.add(model_ms)
-            budget.observe_inference(model_ms)
-            if budget.overload_events > overload_before:
-                overload_event_counter.increment(budget.overload_events - overload_before)
+            swap_ms = (time.perf_counter() - started) * 1000.0
         except Exception as exc:
             inference_error_counter.increment()
             logger.warning("face-swap inference failed: %s", exc)
-            if self._cache_valid(context, now):
-                cache_reuse_counter.increment()
-                cached = context.cached
-                assert cached is not None
-                return cached
-            return rgb
+            held = self._held_frame(context, width, height, now)
+            return held if held is not None else rgb
 
         swapped = np.clip(pred.transpose((0, 2, 3, 1))[0] * 255.0, 0, 255).astype(np.uint8)
         swapped = swapped[:, :, ::-1]
+        swapped_raw = swapped
+        swapped = self._enhance(swapped)
+        swapped = _match_skin(aligned, swapped)
+        neural_ms = (time.perf_counter() - started) * 1000.0
+        model_window.add(neural_ms)
+        budget.observe_inference(neural_ms)
+        if budget.overload_events > overload_before:
+            overload_event_counter.increment(budget.overload_events - overload_before)
         try:
-            output = paste_back(rgb, swapped, transform)
+            output = paste_back(
+                rgb, swapped, transform, raw=swapped_raw, aligned_orig=aligned
+            )
         except cv2.error as exc:
             inference_error_counter.increment()
             logger.warning("face-swap paste-back failed: %s", exc)
-            return rgb
+            held = self._held_frame(context, width, height, now)
+            return held if held is not None else rgb
         context.cached = output
         context.cached_at = now
         pipeline_health.update(
@@ -473,6 +661,8 @@ class FaceSwapEngine:
             "face_swap_source_ready": self._source_ready,
             "swapper_model": self.swapper.status(),
             "arcface_model": self.arcface.status(),
+            "enhancer_model": self.enhancer.status(),
+            "enhancer_enabled": self.enhancer_enabled,
             "detector_backend": self.detector.name,
             "emap_loaded": self._emap is not None,
             "cached_identities": len(self._sources),
@@ -482,6 +672,8 @@ class FaceSwapEngine:
     def preload(self) -> dict:
         self.swapper.load()
         self.arcface.load()
+        if self.enhancer_enabled:
+            self.enhancer.load()
         self._emap_matrix()
         pipeline_health.update(
             face_swap_ready=self.available,

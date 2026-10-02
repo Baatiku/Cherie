@@ -65,6 +65,10 @@ class Settings:
     arcface_model: str = os.getenv(
         "OMNILIVE_ARCFACE_MODEL", "recognition/w600k_r50.onnx"
     )
+    enhancer_model: str = os.getenv(
+        "OMNILIVE_ENHANCER_MODEL", "enhancer/gpen_bfr_256.onnx"
+    )
+    enhancer_enabled: bool = _bool("OMNILIVE_ENHANCER_ENABLED", True)
     region_padding: float = float(os.getenv("OMNILIVE_REGION_PADDING", "0.22"))
     tracker_min_confidence: float = float(os.getenv("OMNILIVE_TRACKER_MIN_CONFIDENCE", "0.22"))
     processor_context_ttl_seconds: int = int(os.getenv("OMNILIVE_PROCESSOR_CONTEXT_TTL_SECONDS", "30"))

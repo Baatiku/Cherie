@@ -14,6 +14,9 @@ class Region:
     width: int
     height: int
     score: float = 1.0
+    # Optional 5-point facial keypoints in full-frame pixel coordinates,
+    # ArcFace order: left eye, right eye, nose, mouth-left, mouth-right.
+    kps: tuple[tuple[float, float], ...] | None = None
 
     @property
     def area(self) -> int:
@@ -26,7 +29,12 @@ class Region:
         y1 = max(y0, min(frame_height, int(self.y + self.height)))
         if x1 - x0 < 2 or y1 - y0 < 2:
             return None
-        return Region(x0, y0, x1 - x0, y1 - y0, self.score)
+        shifted = None
+        if self.kps is not None:
+            dx = float(x0 - int(self.x))
+            dy = float(y0 - int(self.y))
+            shifted = tuple((px + dx, py + dy) for px, py in self.kps)
+        return Region(x0, y0, x1 - x0, y1 - y0, self.score, shifted)
 
     def padded(self, fraction: float, frame_width: int, frame_height: int) -> "Region | None":
         pad_x = int(round(self.width * max(0.0, fraction)))

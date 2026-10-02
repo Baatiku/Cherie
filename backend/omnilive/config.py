@@ -43,7 +43,7 @@ class Settings:
     detector_max_side: int = int(os.getenv("OMNILIVE_DETECTOR_MAX_SIDE", "640"))
     detector_backend: str = os.getenv("OMNILIVE_DETECTOR_BACKEND", "auto").strip().lower()
     face_detector_model: str = os.getenv(
-        "OMNILIVE_FACE_DETECTOR_MODEL", "detectors/scrfd_2.5g.onnx"
+        "OMNILIVE_FACE_DETECTOR_MODEL", "detectors/det_10g.onnx"
     )
     face_detector_confidence: float = float(os.getenv("OMNILIVE_FACE_DETECTOR_CONFIDENCE", "0.50"))
     face_detector_nms: float = float(os.getenv("OMNILIVE_FACE_DETECTOR_NMS", "0.40"))
@@ -59,6 +59,12 @@ class Settings:
     )
     person_detector_confidence: float = float(os.getenv("OMNILIVE_PERSON_DETECTOR_CONFIDENCE", "0.40"))
     person_detector_nms: float = float(os.getenv("OMNILIVE_PERSON_DETECTOR_NMS", "0.45"))
+    swapper_model: str = os.getenv(
+        "OMNILIVE_SWAPPER_MODEL", "swapper/inswapper_128_fp16.onnx"
+    )
+    arcface_model: str = os.getenv(
+        "OMNILIVE_ARCFACE_MODEL", "recognition/w600k_r50.onnx"
+    )
     region_padding: float = float(os.getenv("OMNILIVE_REGION_PADDING", "0.22"))
     tracker_min_confidence: float = float(os.getenv("OMNILIVE_TRACKER_MIN_CONFIDENCE", "0.22"))
     processor_context_ttl_seconds: int = int(os.getenv("OMNILIVE_PROCESSOR_CONTEXT_TTL_SECONDS", "30"))

@@ -9,6 +9,43 @@ OmniLive does one thing: face swap. The only effects are:
 
 There are no other visual styles. The app always runs face swap.
 
+## Real-time identity face swap
+
+The `face_swap` effect is a dedicated identity pipeline, not a generic
+filter. It uses the InsightFace inswapper family (128px, fp16) with an
+ArcFace identity vector computed once from the session reference photo:
+
+```text
+/models/detectors/det_10g.onnx
+/models/recognition/w600k_r50.onnx
+/models/swapper/inswapper_128_fp16.onnx
+```
+
+```text
+OMNILIVE_FACE_DETECTOR_MODEL=detectors/det_10g.onnx
+OMNILIVE_SWAPPER_MODEL=swapper/inswapper_128_fp16.onnx
+OMNILIVE_ARCFACE_MODEL=recognition/w600k_r50.onnx
+```
+
+How it works per live frame:
+
+1. the detector finds the face and its 5 keypoints (every few frames)
+2. the sparse tracker carries those points between detector passes
+3. the face is aligned to the ArcFace 128px template
+4. the swapper paints the reference identity onto the aligned crop
+   (about 5ms on the L4)
+5. the swapped crop is warped back into the frame with a soft face mask
+
+Between swap slots the last swapped frame is reused and shifted with the
+tracker's motion, so output stays at camera frame rate. A reference photo
+with a clear detectable face is required; without one the frame passes
+through untouched. Provision the weights with:
+
+```text
+cd backend
+python -m modal run scripts/provision_swap_models.py
+```
+
 ## Generic ONNX visual adapter
 
 The `custom_onnx` effect is localized by default and uses the configured image-to-image ONNX model.
@@ -27,9 +64,13 @@ OMNILIVE_MODEL_ID=my-effect
 ```
 
 Provider preference is:
-1. TensorRTExecutionProvider
-2. CUDAExecutionProvider
-3. CPUExecutionProvider
+1. CUDAExecutionProvider
+2. CPUExecutionProvider
+
+TensorRT is deliberately not listed: when its system libraries are absent,
+merely including it makes ONNX Runtime skip CUDA as well and fall back to
+CPU, which is ~100x too slow for live swap. Only add it back on images
+that actually install TensorRT.
 
 A CPU-only environment such as local development or Render CI still loads CPUExecutionProvider normally. On a GPU worker, execution-provider failures are treated separately from model/input errors: a failing TensorRT/CUDA provider is temporarily quarantined, the ONNX session is discarded, and OmniLive immediately tries the next healthy configured provider. CPU fallback after a GPU-provider failure is opt-in so production does not silently hide a broken GPU path.
 

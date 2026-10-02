@@ -554,6 +554,9 @@ class TimedProcessor:
     def __init__(self, localized: LocalizedTemporalProcessor | None = None):
         self.visual = VisualProcessor()
         self.localized = localized or LocalizedTemporalProcessor(visual=self.visual)
+        from .face_swap import engine as swap_engine
+
+        self.swap = swap_engine
 
     def _should_localize(self, effect: EffectProfile) -> bool:
         configured = {value.lower() for value in settings.localized_effects}
@@ -574,6 +577,14 @@ class TimedProcessor:
         try:
             if effect == EffectProfile.ORIGINAL:
                 return frame
+            if effect == EffectProfile.FACE_SWAP:
+                # Identity swap runs its own full-frame temporal path with a
+                # per-frame motion-compensated cache, off the event loop.
+                rgb = await asyncio.to_thread(frame.to_ndarray, format="rgb24")
+                out = await asyncio.to_thread(
+                    self.swap.process_frame, rgb, stream_key, profile
+                )
+                return _video_frame(out, frame)
             if not self._should_localize(effect) and force_region is None:
                 # Full-frame built-in effects are still CPU-bound (cv2 resize/blur);
                 # keep the asyncio loop free for aiortc signalling/timing.
@@ -601,9 +612,13 @@ class TimedProcessor:
 
     def release_stream(self, stream_key: str) -> None:
         self.localized.release_stream(stream_key)
+        self.swap.release_stream(stream_key)
 
     def vision_status(self) -> dict:
         return self.localized.vision_status()
+
+    def swap_status(self) -> dict:
+        return {"swap": self.swap.status()}
 
     def preload(self) -> dict:
         runtime.load(strict=False)
@@ -611,6 +626,7 @@ class TimedProcessor:
             "visual_model": runtime.status(),
             "vision_preload": self.localized.preload_vision(),
             "vision": self.localized.vision_status(),
+            "face_swap": self.swap.preload(),
         }
 
 

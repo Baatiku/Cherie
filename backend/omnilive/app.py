@@ -113,7 +113,7 @@ class BenchmarkRequest(BaseModel):
 
 
 class BenchmarkMatrixRequest(BaseModel):
-    effect: EffectProfile = EffectProfile.CUSTOM_ONNX
+    effect: EffectProfile = EffectProfile.FACE_SWAP
     profiles: list[QualityProfile] = Field(
         default_factory=lambda: [
             QualityProfile.LOW_LATENCY,
@@ -371,6 +371,7 @@ def telemetry_payload():
         },
         **pipeline_health.snapshot(),
         **processor.vision_status(),
+        **processor.swap_status(),
         **runtime.status(),
     }
 
@@ -481,6 +482,7 @@ def model_status():
     return {
         **runtime.status(),
         "vision": processor.vision_status(),
+        "swap": processor.swap_status()["swap"],
         "memory": runtime.memory_status(),
     }
 

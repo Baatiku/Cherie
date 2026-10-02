@@ -9,6 +9,7 @@ class QualityProfile(str,Enum):
 class EffectProfile(str,Enum):
     ORIGINAL="original"
     CUSTOM_ONNX="custom_onnx"
+    FACE_SWAP="face_swap"
 
 class CreateSessionRequest(BaseModel):
     profile:QualityProfile=QualityProfile.BALANCED

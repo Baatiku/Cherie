@@ -151,11 +151,11 @@ private fun OmniLiveApp() {
         }
         val intent=Intent(context,LiveStreamService::class.java)
             .putExtra("profile",profile)
-            .putExtra("effect","custom_onnx")
+            .putExtra("effect","face_swap")
             .putExtra("backend_url",backendUrl)
         referencePath?.let { intent.putExtra("reference_image_path",it) }
         runCatching {
-            LiveSessionState.starting(profile,"custom_onnx",backendUrl)
+            LiveSessionState.starting(profile,"face_swap",backendUrl)
             ContextCompat.startForegroundService(context,intent)
         }.onFailure { LiveSessionState.failed(it) }
     }
@@ -238,7 +238,7 @@ private fun OmniLiveApp() {
                         scope.launch {
                             val result=runCatching {
                                 withContext(Dispatchers.IO) {
-                                    TransportPreflight.run(backendUrl,profile,"custom_onnx")
+                                    TransportPreflight.run(backendUrl,profile,"face_swap")
                                 }
                             }
                             backendCheckStatus=result.fold(

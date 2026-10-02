@@ -68,10 +68,11 @@ class _LazyVisionSession:
                 import onnxruntime as ort
 
                 available = ort.get_available_providers()
+                # NOTE: TensorRT is deliberately NOT listed (see face_swap.py):
+                # its mere presence poisons CUDA setup when TRT libs are absent.
                 preferred = [
                     provider
                     for provider in (
-                        "TensorrtExecutionProvider",
                         "CUDAExecutionProvider",
                         "CPUExecutionProvider",
                     )
@@ -164,6 +165,17 @@ class ScrfdFaceDetector:
             self.operational = False
             return []
 
+        # SCRFD-bnkps models append one 10-value keypoint tensor per level
+        # after the score/bbox triples (5 facial points in ArcFace order).
+        kps_levels: list[np.ndarray | None] = [None] * len(pairs)
+        if len(outputs) == 3 * len(pairs):
+            tail = outputs[2 * len(pairs):3 * len(pairs)]
+            if len(tail) == len(pairs) and all(
+                np.asarray(v).squeeze().size % 10 == 0 and np.asarray(v).squeeze().size >= 10
+                for v in tail
+            ):
+                kps_levels = [np.asarray(v).squeeze().reshape(-1, 10).astype(np.float32) for v in tail]
+
         height, width = rgb.shape[:2]
         scale_x = width / float(target_w)
         scale_y = height / float(target_h)
@@ -184,6 +196,9 @@ class ScrfdFaceDetector:
                 continue
             scores = scores[:count]
             boxes = boxes[:count]
+            kps = kps_levels[level]
+            if kps is not None:
+                kps = kps[:count] if len(kps) >= count else None
 
             feature_h = max(1, target_h // stride)
             feature_w = max(1, target_w // stride)
@@ -203,12 +218,20 @@ class ScrfdFaceDetector:
                 y0 = (cy - top) * scale_y
                 x1 = (cx + right) * scale_x
                 y1 = (cy + bottom) * scale_y
+                points = None
+                if kps is not None:
+                    raw = kps[index].reshape(5, 2).astype(np.float32)
+                    absolute = centers[index] + raw * float(stride)
+                    points = tuple(
+                        (float(px) * scale_x, float(py) * scale_y) for px, py in absolute
+                    )
                 region = Region(
                     int(round(x0)),
                     int(round(y0)),
                     int(round(x1 - x0)),
                     int(round(y1 - y0)),
                     float(scores[index]),
+                    points,
                 ).clamp(width, height)
                 if region is not None:
                     regions.append(region)

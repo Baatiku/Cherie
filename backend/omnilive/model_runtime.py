@@ -10,7 +10,9 @@ import numpy as np
 from .config import settings
 
 
-_GPU_PROVIDERS = ("TensorrtExecutionProvider", "CUDAExecutionProvider")
+# NOTE: TensorRT is deliberately absent. Merely listing it when its system
+# libraries are missing makes ORT skip CUDA as well and fall back to CPU.
+_GPU_PROVIDERS = ("CUDAExecutionProvider",)
 
 
 class OnnxRuntime:

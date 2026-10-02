@@ -215,15 +215,16 @@ def _face_oval(size: int, template: str = "arcface_112") -> np.ndarray:
     left_eye, right_eye = dst[0], dst[1]
     eye_dist = float(np.linalg.norm(right_eye - left_eye)) + 1e-6
     cx = float((left_eye[0] + right_eye[0]) * 0.5)
-    # Biased downward so the jaw, chin and beard zone sit inside the swap.
-    cy = float(left_eye[1] + eye_dist * 0.55)
-    rx = eye_dist * 1.10
-    ry = eye_dist * 1.55
+    # Generous oval: forehead to chin and cheek to cheek, so the whole
+    # face is swapped and the edge hides up in the hair, not mid-skin.
+    cy = float(left_eye[1] + eye_dist * 0.60)
+    rx = eye_dist * 1.25
+    ry = eye_dist * 1.70
     yy, xx = np.mgrid[0:size, 0:size].astype(np.float32)
     oval = (((xx - cx) / rx) ** 2 + ((yy - cy) / ry) ** 2) <= 1.0
     mask = np.zeros((size, size), dtype=np.float32)
     mask[oval] = 255.0
-    kernel = max(7, int(round(size / 12.0)))
+    kernel = max(5, int(round(size / 20.0)))
     if kernel % 2 == 0:
         kernel += 1
     mask = cv2.erode(mask, np.ones((kernel, kernel), np.uint8))

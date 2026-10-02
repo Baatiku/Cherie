@@ -118,19 +118,70 @@ def test_soft_box_mask_and_anatomical_oval():
     assert mask[127, 127] == 0.0
 
 
-def test_match_target_skin():
-    """Target skin match must pull swapped face luminance towards live target face."""
-    # Target frame is dark and warm
-    target = np.full((128, 128, 3), [60, 40, 20], dtype=np.uint8)
-    # Swapped frame was bright daylight
-    swapped = np.full((128, 128, 3), [220, 200, 180], dtype=np.uint8)
+def test_match_target_skin_chrominance_only():
+    """L channel must NOT be darkened to match a dark-skin target; only colour cast (a/b) is transferred.
+
+    Scenario: reference identity outputs a bright face (high L); live user has dark skin (low L).
+    Before fix: Reinhard on L pulled brightness down → eyes invisible.
+    After fix: L shift is clamped to ±12 LAB units; the bright model output stays bright.
+    """
+    import cv2
+
+    # Simulated swapped face: model output at ~reference skin luminance (light brown)
+    # Approximately BGR [200, 160, 130] — a typical lighter brown skin in RGB
+    swapped = np.full((128, 128, 3), [200, 160, 130], dtype=np.uint8)
+    swapped_lab = cv2.cvtColor(swapped, cv2.COLOR_RGB2LAB).astype(np.float32)
+    swapped_L_mean = float(swapped_lab[..., 0].mean())
+
+    # Live target face: dark skin, much lower luminance (RGB ~[80, 55, 40])
+    target = np.full((128, 128, 3), [80, 55, 40], dtype=np.uint8)
 
     matched = _match_target_skin(swapped, target, amount=1.0)
     assert matched.shape == (128, 128, 3)
     assert matched.dtype == np.uint8
-    # Matched face must be significantly darker, aligning with target
-    assert matched.mean() < 120.0
-    assert matched.mean() > 30.0
+
+    matched_lab = cv2.cvtColor(matched, cv2.COLOR_RGB2LAB).astype(np.float32)
+    matched_L_mean = float(matched_lab[..., 0].mean())
+
+    # Core assertion: luminance drop must be ≤ 12 LAB units (our clamp).
+    # Before fix this would drop ~30-40 units, making eyes invisible on dark skin.
+    L_drop = swapped_L_mean - matched_L_mean
+    assert L_drop <= 13.0, (
+        f"Luminance dropped by {L_drop:.1f} LAB units — skin darkening bug not fixed "
+        f"(swapped L={swapped_L_mean:.1f}, matched L={matched_L_mean:.1f})"
+    )
+
+    # Secondary: the overall output must still be reasonable (not clamped to black)
+    assert matched.mean() > 50.0
+
+
+def test_match_target_skin_ab_channels_transferred():
+    """Chrominance (a, b channels) must be transferred from target to correct colour cast."""
+    import cv2
+
+    # Swapped face: neutral grey (no colour cast)
+    swapped = np.full((128, 128, 3), [150, 150, 150], dtype=np.uint8)
+    # Target: warm orange-tinted skin (positive a = red-green shift)
+    target = np.full((128, 128, 3), [180, 120, 90], dtype=np.uint8)
+
+    matched = _match_target_skin(swapped, target, amount=1.0)
+
+    swapped_lab = cv2.cvtColor(swapped, cv2.COLOR_RGB2LAB).astype(np.float32)
+    target_lab = cv2.cvtColor(target, cv2.COLOR_RGB2LAB).astype(np.float32)
+    matched_lab = cv2.cvtColor(matched, cv2.COLOR_RGB2LAB).astype(np.float32)
+
+    # The a channel of matched must be closer to target than to swapped
+    swapped_a = float(swapped_lab[..., 1].mean())
+    target_a = float(target_lab[..., 1].mean())
+    matched_a = float(matched_lab[..., 1].mean())
+
+    dist_to_target = abs(matched_a - target_a)
+    dist_to_swapped = abs(matched_a - swapped_a)
+    assert dist_to_target < dist_to_swapped, (
+        f"a-channel not transferred toward target: "
+        f"swapped_a={swapped_a:.1f}, target_a={target_a:.1f}, matched_a={matched_a:.1f}"
+    )
+
 
 
 def test_paste_back_blending_without_core_override():

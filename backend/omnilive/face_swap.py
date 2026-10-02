@@ -79,7 +79,7 @@ _ARCFACE_128 = np.array(
 # still just before the loss (blink, brief cover). A fast-moving loss
 # (head turn) clears immediately, so no stale swap ever floats around.
 STILL_FREEZE_SECONDS = 0.5
-STILL_SPEED_PX = 3.0
+STILL_SPEED_PX = 12.0  # raised from 3.0 — handheld tremor / breathing easily exceeds 3 px/frame
 ROI_SCORE = 0.30
 
 ENGINES = {
@@ -384,10 +384,14 @@ def _match_target_skin(
     target_aligned: np.ndarray,
     amount: float = 1.0,
 ) -> np.ndarray:
-    """Transfer lighting, white balance, and skin tone from the live target face crop to the swapped crop in LAB.
+    """Transfer colour cast from the live target face to the swapped crop.
 
-    Anchors the swapped face to the live room environment and skin tone, preventing
-    the alien-mask artifact.
+    Strategy (chrominance-only Reinhard):
+    - L (luminance): only correct gross exposure mismatch (max ±12 LAB units).
+      Never scale L down — inswapper already outputs a naturally-lit face; dragging
+      luminance to match a darker live face causes darkening and eye loss.
+    - a, b (chrominance): full Reinhard transfer so skin hue / white-balance matches
+      the live room environment without altering perceived brightness.
     """
     try:
         swapped_lab = cv2.cvtColor(swapped, cv2.COLOR_RGB2LAB).astype(np.float32)
@@ -408,17 +412,32 @@ def _match_target_skin(
         target_mean = target_pts.mean(axis=0)
         target_std = target_pts.std(axis=0)
 
-        matched = np.empty_like(swapped_lab)
-        for c in range(3):
+        matched = swapped_lab.copy()
+
+        # L channel: gentle exposure correction only — clamp shift to ±12 LAB units.
+        # This handles a studio-flash reference vs dim-room live face without
+        # darkening the swap when the user has darker skin than the reference.
+        l_shift = float(target_mean[0]) - float(swapped_mean[0])
+        l_shift = float(np.clip(l_shift, -12.0, 12.0))
+        matched[..., 0] = swapped_lab[..., 0] + l_shift
+
+        # a, b channels: full Reinhard transfer to fix colour cast / white balance
+        for c in (1, 2):
             s_std = float(swapped_std[c]) + 1e-4
             t_std = float(target_std[c]) + 1e-4
-            scale_ratio = np.clip(t_std / s_std, 0.65, 1.5)
-            matched[..., c] = (swapped_lab[..., c] - float(swapped_mean[c])) * scale_ratio + float(target_mean[c])
+            scale_ratio = float(np.clip(t_std / s_std, 0.65, 1.5))
+            matched[..., c] = (
+                (swapped_lab[..., c] - float(swapped_mean[c])) * scale_ratio
+                + float(target_mean[c])
+            )
 
         matched_rgb = cv2.cvtColor(np.clip(matched, 0, 255).astype(np.uint8), cv2.COLOR_LAB2RGB)
         if amount >= 0.99:
             return matched_rgb
-        blended = swapped.astype(np.float32) * (1.0 - amount) + matched_rgb.astype(np.float32) * amount
+        blended = (
+            swapped.astype(np.float32) * (1.0 - amount)
+            + matched_rgb.astype(np.float32) * amount
+        )
         return np.clip(blended, 0, 255).astype(np.uint8)
     except Exception as exc:
         logger.warning("target skin match skipped: %s", exc)
@@ -822,14 +841,37 @@ class FaceSwapEngine:
     def _filter_transform(
         self, context: SwapStream, matrix: np.ndarray, timestamp: float
     ) -> np.ndarray:
-        """Filter rigid similarity parameters (translation, scale, rotation) to prevent scale breathing."""
+        """Filter rigid similarity parameters (translation, scale, rotation) to prevent scale breathing.
+
+        When the face is moving fast (context.last_speed > 10 px/frame) we bypass
+        the filter and return the raw matrix directly — the jitter is imperceptible
+        at that speed and the lag from a stiff filter causes the swap to slide behind
+        the real face. At moderate speed (>5 px/frame) we use higher beta values to
+        allow the filter to follow without over-smoothing.
+        """
+        speed = getattr(context, "last_speed", 0.0)
+
+        # Fast motion: skip filter entirely — raw matrix tracks head perfectly
+        if speed > 10.0:
+            # Still feed values into the filters so they warm up for when we re-engage
+            tx, ty, scale, angle = _decompose_similarity(matrix)
+            if len(context.pose_euro) == 4:
+                for f, v in zip(context.pose_euro, (tx, ty, scale, angle)):
+                    f(v, timestamp)  # warm up, discard output
+            return matrix
+
         tx, ty, scale, angle = _decompose_similarity(matrix)
+        # Moderate motion: looser beta so the filter chases position quickly
+        beta_tx = 0.08 if speed > 5.0 else 0.03
+        beta_scale = 0.02 if speed > 5.0 else 0.005
+        beta_angle = 0.04 if speed > 5.0 else 0.01
+
         if len(context.pose_euro) != 4:
             context.pose_euro = [
-                _OneEuro(min_cutoff=1.2, beta=0.03),  # tx
-                _OneEuro(min_cutoff=1.2, beta=0.03),  # ty
-                _OneEuro(min_cutoff=0.6, beta=0.005), # scale (stiff to prevent scale pulsing)
-                _OneEuro(min_cutoff=0.8, beta=0.01),  # angle (stiff to prevent tilt wobble)
+                _OneEuro(min_cutoff=1.2, beta=beta_tx),   # tx
+                _OneEuro(min_cutoff=1.2, beta=beta_tx),   # ty
+                _OneEuro(min_cutoff=0.6, beta=beta_scale),  # scale
+                _OneEuro(min_cutoff=0.8, beta=beta_angle),  # angle
             ]
         s_tx = context.pose_euro[0](tx, timestamp)
         s_ty = context.pose_euro[1](ty, timestamp)
@@ -849,7 +891,9 @@ class FaceSwapEngine:
 
         # Fast ROI path: if already tracking, detect inside a padded sub-window
         if context.box is not None and context.missed_frames == 0:
-            bx1, by1, bx2, by2 = context.box.x1, context.box.y1, context.box.x2, context.box.y2
+            # Region uses x, y, width, height — compute corners from those fields
+            bx1, by1 = context.box.x, context.box.y
+            bx2, by2 = context.box.x + context.box.width, context.box.y + context.box.height
             bw, bh = bx2 - bx1, by2 - by1
             pad_x, pad_y = int(bw * 0.35), int(bh * 0.35)
             rx1, ry1 = max(0, bx1 - pad_x), max(0, by1 - pad_y)
@@ -861,14 +905,16 @@ class FaceSwapEngine:
                     if roi_found:
                         best_roi = max(roi_found, key=lambda r: (r.score, r.area))
                         if best_roi.score >= ROI_SCORE:
+                            # Translate ROI-local coords back to full-frame coords.
+                            # Region(x, y, width, height, score, kps)
                             found = [
                                 Region(
-                                    x1=best_roi.x1 + rx1,
-                                    y1=best_roi.y1 + ry1,
-                                    x2=best_roi.x2 + rx1,
-                                    y2=best_roi.y2 + ry1,
-                                    score=best_roi.score,
-                                    kps=[[p[0] + rx1, p[1] + ry1] for p in best_roi.kps],
+                                    best_roi.x + rx1,
+                                    best_roi.y + ry1,
+                                    best_roi.width,
+                                    best_roi.height,
+                                    best_roi.score,
+                                    tuple((p[0] + rx1, p[1] + ry1) for p in best_roi.kps),
                                 )
                             ]
                 except Exception as exc:

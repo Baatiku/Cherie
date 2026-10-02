@@ -200,23 +200,23 @@ def paste_back(
     return np.clip(merged, 0, 255).astype(np.uint8)
 
 
-def _match_skin(target: np.ndarray, swapped: np.ndarray, amount: float = 0.5) -> np.ndarray:
-    """Pull the swapped crop's skin tone toward the live face in LAB space.
+def _match_skin(
+    swapped: np.ndarray, ref_mean: np.ndarray, ref_std: np.ndarray, amount: float = 1.0
+) -> np.ndarray:
+    """Pull the swapped crop's skin tone toward the reference photo in LAB space.
 
-    LAB separates brightness from color, so this fixes the classic
-    too-pale/too-dark pasted-face look without washing out identity.
-    Only half-applied to protect the swapped identity.
+    LAB separates brightness from color, and the statistics come from the
+    reference face itself, so the swapped face carries the photo's skin
+    tone instead of the live camera lighting.
     """
     try:
-        target_lab = cv2.cvtColor(target, cv2.COLOR_RGB2LAB).astype(np.float32)
         swapped_lab = cv2.cvtColor(swapped, cv2.COLOR_RGB2LAB).astype(np.float32)
         matched = np.empty_like(swapped_lab)
         for channel in range(3):
             src = swapped_lab[..., channel]
-            dst = target_lab[..., channel]
             matched[..., channel] = (src - float(src.mean())) * (
-                (float(dst.std()) + 5.0) / (float(src.std()) + 5.0)
-            ) + float(dst.mean())
+                (float(ref_std[channel]) + 5.0) / (float(src.std()) + 5.0)
+            ) + float(ref_mean[channel])
         matched_rgb = cv2.cvtColor(
             np.clip(matched, 0, 255).astype(np.uint8), cv2.COLOR_LAB2RGB
         )
@@ -325,7 +325,8 @@ class FaceSwapEngine:
         self.arcface = _LazySwapSession(settings.arcface_model)
         self.enhancer = _LazySwapSession(settings.enhancer_model)
         self._emap: np.ndarray | None = None
-        self._sources: dict[str, np.ndarray] = {}
+        self._sources: dict[str, dict] = {}
+        self._stream_sha: dict[str, str] = {}
         self._streams: dict[str, SwapStream] = {}
         self._lock = Lock()
         self._infer_lock = Lock()
@@ -413,9 +414,11 @@ class FaceSwapEngine:
             return None
         with self._lock:
             cached = self._sources.get(sha)
+            if cached is not None:
+                self._stream_sha[stream_key] = sha
         if cached is not None:
             self._source_ready = True
-            return cached
+            return cached["latent"]
         detections = [r for r in self.detector.detect(rgb) if r.kps is not None]
         if not detections:
             logger.warning("no alignable face in reference image for stream %s", stream_key)
@@ -446,14 +449,37 @@ class FaceSwapEngine:
         latent = embedding.reshape(1, -1) @ emap
         latent = latent / (float(np.linalg.norm(latent)) + 1e-9)
         latent = latent.astype(np.float32)
+        tone_lab = cv2.cvtColor(aligned, cv2.COLOR_RGB2LAB).astype(np.float32)
+        tone_mean = tone_lab.reshape(-1, 3).mean(axis=0).astype(np.float32)
+        tone_std = tone_lab.reshape(-1, 3).std(axis=0).astype(np.float32)
         with self._lock:
-            self._sources[sha] = latent
+            self._sources[sha] = {
+                "latent": latent,
+                "tone_mean": tone_mean,
+                "tone_std": tone_std,
+            }
+            self._stream_sha[stream_key] = sha
             if len(self._sources) > 16:
                 oldest = next(iter(self._sources))
                 self._sources.pop(oldest, None)
         self._source_ready = True
         logger.info("face-swap identity ready for stream %s", stream_key)
         return latent
+
+    def source_tone(self, stream_key: str) -> tuple[np.ndarray, np.ndarray] | None:
+        """LAB skin-tone statistics of the session reference face itself."""
+        with self._lock:
+            sha = self._stream_sha.get(stream_key)
+            entry = self._sources.get(sha) if sha is not None else None
+        if entry is None:
+            if self.source_latent(stream_key) is None:
+                return None
+            with self._lock:
+                sha = self._stream_sha.get(stream_key)
+                entry = self._sources.get(sha) if sha is not None else None
+        if entry is None:
+            return None
+        return entry["tone_mean"], entry["tone_std"]
 
     def _context(self, stream_key: str, profile_name: str) -> SwapStream:
         now = time.perf_counter()
@@ -630,7 +656,9 @@ class FaceSwapEngine:
         swapped = swapped[:, :, ::-1]
         swapped_raw = swapped
         swapped = self._enhance(swapped)
-        swapped = _match_skin(aligned, swapped)
+        tone = self.source_tone(stream_key)
+        if tone is not None:
+            swapped = _match_skin(swapped, tone[0], tone[1])
         neural_ms = (time.perf_counter() - started) * 1000.0
         model_window.add(neural_ms)
         budget.observe_inference(neural_ms)

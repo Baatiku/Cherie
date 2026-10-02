@@ -306,7 +306,7 @@ def _face_oval(size: int, template: str = "arcface_112", grow: float = 1.0) -> n
     eye_dist = float(np.linalg.norm(right_eye - left_eye)) + 1e-6
     cx = float((left_eye[0] + right_eye[0]) * 0.5)
     cy = float((left_eye[1] + right_eye[1]) * 0.5 + eye_dist * 0.65)
-    rx = eye_dist * 1.45 * grow
+    rx = eye_dist * 1.65 * grow  # widened from 1.45: covers side-cheek at yaw angles
     ry = eye_dist * 1.95 * grow
     yy, xx = np.mgrid[0:size, 0:size].astype(np.float32)
     oval = (((xx - cx) / rx) ** 2 + ((yy - cy) / ry) ** 2) <= 1.0
@@ -400,8 +400,8 @@ def _match_target_skin(
 
         # Central face sampling mask to ignore hair and background borders
         yy, xx = np.mgrid[0:size, 0:size].astype(np.float32)
-        cx, cy = size * 0.5, size * 0.55
-        rx, ry = size * 0.32, size * 0.40
+        cx, cy = size * 0.5, size * 0.50   # centered vertically: captures eyes + cheeks
+        rx, ry = size * 0.32, size * 0.44  # taller than before to include eye region
         mask = (((xx - cx) / rx) ** 2 + ((yy - cy) / ry) ** 2) <= 1.0
 
         swapped_pts = swapped_lab[mask]
@@ -562,14 +562,25 @@ class SwapStream:
     frozen_at: float = 0.0
     last_seen: float = field(default_factory=time.perf_counter)
 
+    raw_kps: np.ndarray | None = None          # unfiltered detector kps (used for extrapolation)
+    tone_ema: np.ndarray = field(default_factory=lambda: np.zeros(3, dtype=np.float32))
+    tone_ema_ready: bool = False               # False until first frame initialises the EMA
+
     def configure(self, profile_name: str) -> None:
         if self.budget is None or self.profile_name != profile_name:
+            new_profile = profile_defaults(profile_name)
+            old_fps = self.budget.target_neural_fps if self.budget is not None else None
             self.profile_name = profile_name
-            self.budget = AdaptiveInferenceBudget(profile_defaults(profile_name))
+            self.budget = AdaptiveInferenceBudget(new_profile)
+            # When upgrading to a higher-fps profile, seed from the last achieved
+            # rate so we ramp gently rather than spiking into overload immediately.
+            if old_fps is not None and old_fps < new_profile.neural_fps:
+                self.budget.target_neural_fps = old_fps
 
     def reset_tracking(self) -> None:
         self.box = None
         self.kps = None
+        self.raw_kps = None
         self.euro = []
         self.pose_euro = []
         self.prev_centroid = None
@@ -608,7 +619,8 @@ class FaceSwapEngine:
         self._stream_sha: dict[str, str] = {}
         self._streams: dict[str, SwapStream] = {}
         self._lock = Lock()
-        self._infer_lock = Lock()
+        self._swap_lock = Lock()   # serialises swapper + enhancer on the GPU stream
+        self._meta_lock = Lock()   # serialises arcface + xseg (reference path, infrequent)
         self._source_ready = False
 
     @property
@@ -699,7 +711,7 @@ class FaceSwapEngine:
         blob = cv2.dnn.blobFromImage(
             aligned, 1.0 / 127.5, (112, 112), (127.5, 127.5, 127.5), swapRB=False
         )
-        with self._infer_lock:
+        with self._meta_lock:
             embedding = np.asarray(session.run(None, {meta.name: blob})[0]).reshape(-1)
         norm = float(np.linalg.norm(embedding)) + 1e-9
         embedding = (embedding / norm).astype(np.float32)
@@ -757,7 +769,7 @@ class FaceSwapEngine:
             up = cv2.resize(crop, (256, 256), interpolation=cv2.INTER_CUBIC)
             blob = (up.astype(np.float32) / 127.5 - 1.0).transpose(2, 0, 1)[None, ...]
             meta = session.get_inputs()[0]
-            with self._infer_lock:
+            with self._swap_lock:
                 out = np.asarray(session.run(None, {meta.name: blob})[0])
             enhanced = np.clip((out[0].transpose(1, 2, 0) + 1.0) * 127.5, 0, 255)
             if not np.isfinite(float(enhanced.mean())):
@@ -795,13 +807,16 @@ class FaceSwapEngine:
             bgr = frame[:, :, ::-1]
             blob = np.expand_dims(bgr.astype(np.float32) / 255.0, axis=0)
             meta = session.get_inputs()[0]
-            with self._infer_lock:
+            with self._meta_lock:
                 out = np.asarray(session.run(None, {meta.name: blob})[0])
             mask = np.clip(out.reshape(256, 256), 0.0, 1.0).astype(np.float32)
             if mask.mean() < 0.005 or mask.mean() > 0.995:
                 return None
             mask = cv2.GaussianBlur(mask, (0, 0), 5)
-            mask = (np.clip(mask, 0.5, 1.0) - 0.5) * 2.0
+            # Remap [0.4, 1.0] → [0, 1] linearly: preserves soft edges in the 0.4–0.6
+            # transition band where hand/object boundaries live.  Old formula
+            # hard-zeroed everything below 0.5, creating a visible pixel step.
+            mask = np.clip((mask - 0.4) / 0.6, 0.0, 1.0)
             if size != 256:
                 mask = cv2.resize(mask, (size, size), interpolation=cv2.INTER_LINEAR)
             return np.clip(mask, 0.0, 1.0).astype(np.float32)
@@ -868,11 +883,18 @@ class FaceSwapEngine:
 
         if len(context.pose_euro) != 4:
             context.pose_euro = [
-                _OneEuro(min_cutoff=1.2, beta=beta_tx),   # tx
-                _OneEuro(min_cutoff=1.2, beta=beta_tx),   # ty
-                _OneEuro(min_cutoff=0.6, beta=beta_scale),  # scale
-                _OneEuro(min_cutoff=0.8, beta=beta_angle),  # angle
+                _OneEuro(min_cutoff=1.2, beta=beta_tx),    # tx
+                _OneEuro(min_cutoff=1.2, beta=beta_tx),    # ty
+                _OneEuro(min_cutoff=0.6, beta=beta_scale), # scale
+                _OneEuro(min_cutoff=0.8, beta=beta_angle), # angle
             ]
+        else:
+            # Hot-swap beta on running filters — _OneEuro stores beta as self.beta
+            # but never reads it dynamically; mutating it is the only way to adapt.
+            context.pose_euro[0].beta = beta_tx
+            context.pose_euro[1].beta = beta_tx
+            context.pose_euro[2].beta = beta_scale
+            context.pose_euro[3].beta = beta_angle
         s_tx = context.pose_euro[0](tx, timestamp)
         s_ty = context.pose_euro[1](ty, timestamp)
         s_scale = context.pose_euro[2](scale, timestamp)
@@ -949,6 +971,7 @@ class FaceSwapEngine:
         if context.kps is None:
             context.euro = []
             context.pose_euro = []
+        context.raw_kps = fresh.copy()   # save unfiltered for extrapolation in _no_face
         context.kps = self._filter_kps(context, fresh, now)
         context.missed_frames = 0
         detector_window.add((time.perf_counter() - started) * 1000.0)
@@ -982,7 +1005,7 @@ class FaceSwapEngine:
             feeds[ref_name] = latent
         elif len(inputs) > 1:
             return None, []
-        with self._infer_lock:
+        with self._swap_lock:
             results = session.run(None, feeds)
         outputs = session.get_outputs()
         decoded = None
@@ -1049,10 +1072,35 @@ class FaceSwapEngine:
             swapped, model_masks = self._swap_crop(aligned, latent, size)
             if swapped is None:
                 raise RuntimeError("swapper produced no face")
-            swapped = self._enhance(swapped, size)
+            # ── Rank 9: EMA-smooth the live LAB skin stats across frames ──────────────
+            # A single noisy/compressed frame causes the target_mean to jump, making
+            # the colour transfer jitter. α=0.15 means the transfer chases real lighting
+            # changes (τ ≈ 6 frames) rather than reacting to every frame's codec noise.
+            _TONE_EMA_ALPHA = 0.15
+            try:
+                _tmp_lab = cv2.cvtColor(aligned, cv2.COLOR_RGB2LAB).astype(np.float32)
+                _sz = aligned.shape[0]
+                _yy, _xx = np.mgrid[0:_sz, 0:_sz].astype(np.float32)
+                _mask = (((_xx - _sz * 0.5) / (_sz * 0.32)) ** 2
+                         + ((_yy - _sz * 0.50) / (_sz * 0.44)) ** 2) <= 1.0
+                _live_mean = _tmp_lab[_mask].mean(axis=0).astype(np.float32)
+                if not context.tone_ema_ready:
+                    context.tone_ema = _live_mean.copy()
+                    context.tone_ema_ready = True
+                else:
+                    context.tone_ema = (
+                        _TONE_EMA_ALPHA * _live_mean
+                        + (1.0 - _TONE_EMA_ALPHA) * context.tone_ema
+                    )
+            except Exception:
+                pass  # never let EMA computation break the frame
 
-            # Target-anchored skin tone transfer in LAB: anchors the swap to live room lighting
+            # ── Rank 3: colour-correct first, then sharpen ────────────────────────────
+            # GPEN sharpens swapper output at the reference identity's skin tone.
+            # Doing colour match first means the enhancer sharpens the live-matched
+            # pixels → no colour fringing at sharpened edges (lips, eyes).
             swapped = _match_target_skin(swapped, aligned, amount=1.0)
+            swapped = self._enhance(swapped, size)
 
             neural_ms = (time.perf_counter() - started) * 1000.0
             model_window.add(neural_ms)
@@ -1134,7 +1182,11 @@ class FaceSwapEngine:
             and context.missed_frames <= 3
             and (now - context.cached_at) <= STILL_FREEZE_SECONDS
         ):
-            extrapolated_kps = context.kps + context.velocity * float(context.missed_frames)
+            # Use raw (unfiltered) kps as extrapolation base: context.kps is One Euro
+            # smoothed, so extrapolating from it compounds the filter lag on top of the
+            # missed-frame offset. raw_kps is the direct SCRFD output — accurate position.
+            base_kps = context.raw_kps if context.raw_kps is not None else context.kps
+            extrapolated_kps = base_kps + context.velocity * float(context.missed_frames)
             current = _similarity(extrapolated_kps, _template_points(template, size))
             if current is not None:
                 cache_reuse_counter.increment()

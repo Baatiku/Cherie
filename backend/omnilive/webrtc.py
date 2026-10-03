@@ -35,8 +35,23 @@ try:
                     pass
 
         _aiortc_h264.H264Encoder.__init__ = _patched_h264_encoder_init
+
+    # aioice schedules STUN transaction retries via loop.call_later().
+    # If the peer connection closes before all transactions settle, the retry timer
+    # calls send_stun() on a closed/None transport, crashing with AttributeError.
+    import aioice.ice
+    _orig_send_stun = getattr(aioice.ice.IceProtocol, "send_stun", None)
+    if _orig_send_stun is not None:
+        def _safe_send_stun(self, message, addr):
+            transport = getattr(self, "transport", None)
+            if transport is not None and getattr(transport, "_sock", None) is not None:
+                try:
+                    transport.sendto(bytes(message), addr)
+                except Exception:
+                    pass
+        aioice.ice.IceProtocol.send_stun = _safe_send_stun
 except Exception as exc:
-    logger.warning("aiortc bitrate and latency defaults could not be configured: %s", exc)
+    logger.warning("aiortc/aioice defaults could not be configured: %s", exc)
 
 from .frame_correlation import FrameCorrelator
 from .ice import current_ice_config

@@ -827,7 +827,12 @@ def validate_session(session_id: str, authorization: str | None = Header(default
 
 @app.delete("/v1/sessions/{session_id}")
 async def delete_session(session_id: str, authorization: str | None = Header(default=None)):
-    _authorized_session(session_id, authorization)
+    try:
+        _authorized_session(session_id, authorization)
+    except HTTPException:
+        # If the session is already discarded, expired, or never created,
+        # session disposal is idempotent.
+        pass
     await close_peer(session_id)
     processor.release_stream(session_id)
     removed = registry.discard(session_id)

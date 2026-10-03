@@ -5,7 +5,11 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA"/>
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
-    <application android:allowBackup="false" android:label="OmniLive" android:theme="@style/Theme.OmniLive">
+    <application
+        android:allowBackup="false"
+        android:label="OmniLive"
+        android:theme="@style/Theme.OmniLive"
+        android:usesCleartextTraffic="true">
         <activity android:name=".MainActivity" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>

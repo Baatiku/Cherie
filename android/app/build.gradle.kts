@@ -19,7 +19,7 @@ val defaultBackendUrl = providers.environmentVariable("OMNILIVE_DEFAULT_BACKEND_
     .orNull
     ?.trim()
     ?.takeIf { it.isNotBlank() }
-    ?: "http://10.0.2.2:8000"
+    ?: "https://baatiku--omnilive-api.modal.run"
 
 // Release signing reads from env so no secrets live in Git. If the keystore
 // or password is absent, the release build stays unsigned.

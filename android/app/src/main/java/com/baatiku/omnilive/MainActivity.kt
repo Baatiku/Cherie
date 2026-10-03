@@ -87,7 +87,10 @@ private fun OmniLiveApp() {
     var page by remember { mutableIntStateOf(0) }
     var profile by remember { mutableStateOf(prefs.getString("profile","balanced") ?: "balanced") }
     var backendUrl by remember {
-        mutableStateOf(prefs.getString("backend_url",BuildConfig.DEFAULT_BACKEND_URL) ?: BuildConfig.DEFAULT_BACKEND_URL)
+        val saved = prefs.getString("backend_url", BuildConfig.DEFAULT_BACKEND_URL) ?: BuildConfig.DEFAULT_BACKEND_URL
+        val resolved = if (saved == "http://10.0.2.2:8000" || saved.isBlank()) BuildConfig.DEFAULT_BACKEND_URL else saved
+        if (resolved != saved) prefs.edit().putString("backend_url", resolved).apply()
+        mutableStateOf(resolved)
     }
     var referencePath by remember { mutableStateOf(prefs.getString("reference_image_path",null)) }
     var referencePreview by remember { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }

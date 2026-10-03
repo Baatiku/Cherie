@@ -252,8 +252,13 @@ async def accept_offer(body: WebRtcOffer, timing_bridge: FrameTimingBridge | Non
         async def on_ended():
             await close_peer(state.session_id)
 
+    @pc.on("iceconnectionstatechange")
+    def on_ice_state_change():
+        logger.info("peer %s ice connection state: %s", state.session_id, pc.iceConnectionState)
+
     @pc.on("connectionstatechange")
     async def on_connection_state_change():
+        logger.info("peer %s peer connection state: %s", state.session_id, pc.connectionState)
         # "disconnected" is a *transient* ICE state — the browser/Android client
         # will retry and typically reconnects within a few seconds on mobile.
         # Closing immediately on "disconnected" kills the session on every

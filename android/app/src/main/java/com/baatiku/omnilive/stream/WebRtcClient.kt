@@ -188,10 +188,10 @@ class WebRtcClient(
             try {
                 session=null
                 iceServers=SessionApi.iceServers(baseUrl).map { cfg ->
-                    PeerConnection.IceServer.builder(cfg.urls)
-                        .setUsername(cfg.username)
-                        .setPassword(cfg.credential)
-                        .createIceServer()
+                    val builder=PeerConnection.IceServer.builder(cfg.urls)
+                    if(cfg.username.isNotBlank()) builder.setUsername(cfg.username)
+                    if(cfg.credential.isNotBlank()) builder.setPassword(cfg.credential)
+                    builder.createIceServer()
                 }
                 withContext(Dispatchers.Main) { startPeer() }
             } catch(t:Throwable) {
@@ -249,13 +249,17 @@ class WebRtcClient(
         peer?.close()
         peer=createPeer()
         videoSender=peer!!.addTrack(localTrack!!,listOf("omnilive"))
+        peer!!.transceivers.firstOrNull { it.mediaType==MediaStreamTrack.MediaType.MEDIA_TYPE_VIDEO }?.direction=RtpTransceiver.RtpTransceiverDirection.SEND_RECV
         applySenderLimits(activeProfileName)
+        val constraints=MediaConstraints().apply {
+            mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo","true"))
+        }
         peer!!.createOffer(object:SimpleSdpObserver() {
             override fun onCreateSuccess(desc:SessionDescription) {
                 peer?.setLocalDescription(object:SimpleSdpObserver(){},desc)
             }
             override fun onCreateFailure(error:String) { fail(error) }
-        },MediaConstraints())
+        },constraints)
         // Fallback if ICE gathering stalls behind restrictive NAT: proceed with
         // whatever local candidates exist after 3.5s instead of never dialling.
         scope.launch {
@@ -425,7 +429,6 @@ class WebRtcClient(
                             )
                             val answerSdp=json.getString("sdp")
                             val answerType=json.optString("type","answer")
-                            frameMarksEnabled=true
                             sendReferenceImage(webSocket)
                             scope.launch(Dispatchers.Main) {
                                 peer?.setRemoteDescription(object:SimpleSdpObserver(){
@@ -452,6 +455,7 @@ class WebRtcClient(
                         "reference_image" -> {
                             val status=json.optString("status","error")
                             if(status=="ready") {
+                                frameMarksEnabled=true
                                 LiveTelemetry.update {
                                     it.copy(
                                         referenceImageStatus="ready",
@@ -669,6 +673,7 @@ class WebRtcClient(
                 reconnectAttempts=0
                 reconnectJob?.cancel()
                 reconnectJob=null
+                frameMarksEnabled=true
             }
             // Same as above: DISCONNECTED at the peer-connection level is also
             // transient. The server holds the session for 15 s after a disconnect;

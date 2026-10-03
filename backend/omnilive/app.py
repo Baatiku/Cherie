@@ -624,6 +624,8 @@ async def live_socket(websocket: WebSocket):
                 break
             last_activity = time.monotonic()
             action = message.get("action")
+            if action != "frame_mark":
+                logger.info("live_socket %s received action: %s", session.session_id, action)
             if action == "stop":
                 break
             if action == "ping":

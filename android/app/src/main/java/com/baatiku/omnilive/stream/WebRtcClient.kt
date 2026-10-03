@@ -154,6 +154,7 @@ class WebRtcClient(
     private fun connect() {
         if(stopped.get()) return
         connectJob?.cancel()
+        cancelGraceReconnect()
         frameMarksEnabled=false
         ReturnedVideoBus.setStreamAvailable(false)
         frameLatency.reset()
@@ -249,7 +250,12 @@ class WebRtcClient(
         peer?.close()
         peer=createPeer()
         videoSender=peer!!.addTrack(localTrack!!,listOf("omnilive"))
-        peer!!.transceivers.firstOrNull { it.mediaType==MediaStreamTrack.MediaType.MEDIA_TYPE_VIDEO }?.direction=RtpTransceiver.RtpTransceiverDirection.SEND_RECV
+        try {
+            peer!!.transceivers.firstOrNull { it.mediaType==MediaStreamTrack.MediaType.MEDIA_TYPE_VIDEO }?.direction=RtpTransceiver.RtpTransceiverDirection.SEND_RECV
+        } catch(_:Throwable) {
+            // Older WebRTC builds tolerate the default direction; never let
+            // an optional setting kill the whole connect attempt.
+        }
         applySenderLimits(activeProfileName)
         val constraints=MediaConstraints().apply {
             mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo","true"))
@@ -525,6 +531,7 @@ class WebRtcClient(
 
     private fun scheduleReconnect() {
         if(stopped.get() || reconnectJob?.isActive==true) return
+        cancelGraceReconnect()
         reconnectAttempts++
         val exponent=minOf(reconnectAttempts-1,5)
         val baseDelayMs=minOf(30000L,1000L*(1L shl exponent))
@@ -535,6 +542,23 @@ class WebRtcClient(
             delay(delayMs)
             if(!stopped.get()) connect()
         }
+    }
+
+    private var graceJob:Job?=null
+
+    private fun scheduleGraceReconnect() {
+        if(stopped.get() || graceJob?.isActive==true) return
+        if(reconnectJob?.isActive==true) return
+        LiveTelemetry.update { it.copy(connectionState="waiting",lastError="Holding briefly for the network") }
+        graceJob=scope.launch {
+            delay(15000)
+            if(!stopped.get()) scheduleReconnect()
+        }
+    }
+
+    private fun cancelGraceReconnect() {
+        graceJob?.cancel()
+        graceJob=null
     }
 
     private fun collectStats() {
@@ -661,11 +685,9 @@ class WebRtcClient(
         override fun onSignalingChange(state:PeerConnection.SignalingState) {}
         override fun onIceConnectionChange(state:PeerConnection.IceConnectionState) {
             LiveTelemetry.update { it.copy(iceState=state.name.lowercase()) }
-            // DISCONNECTED is a transient ICE state (normal during initial gathering
-            // and brief network hiccups). Reconnecting immediately on DISCONNECTED
-            // cancels the ongoing connect job and leaves the session stuck at idle.
-            // Only react to FAILED, which is unrecoverable without a new offer/answer.
             if(state==PeerConnection.IceConnectionState.FAILED) scheduleReconnect()
+            else if(state==PeerConnection.IceConnectionState.DISCONNECTED) scheduleGraceReconnect()
+            else if(state==PeerConnection.IceConnectionState.CONNECTED) cancelGraceReconnect()
         }
         override fun onConnectionChange(state:PeerConnection.PeerConnectionState) {
             LiveTelemetry.update { it.copy(connectionState=state.name.lowercase()) }
@@ -673,12 +695,15 @@ class WebRtcClient(
                 reconnectAttempts=0
                 reconnectJob?.cancel()
                 reconnectJob=null
+                cancelGraceReconnect()
                 frameMarksEnabled=true
             }
-            // Same as above: DISCONNECTED at the peer-connection level is also
-            // transient. The server holds the session for 15 s after a disconnect;
-            // the client should do the same and only force-reconnect on FAILED.
+            // Same contract as the server: a brief disconnect gets a grace
+            // period to self-heal (matches the server's 15 s hold) instead
+            // of an instant reconnect that thrashes sessions on both ends.
+            // Only FAILED forces an immediate fresh start.
             if(state==PeerConnection.PeerConnectionState.FAILED) scheduleReconnect()
+            else if(state==PeerConnection.PeerConnectionState.DISCONNECTED) scheduleGraceReconnect()
         }
         override fun onIceConnectionReceivingChange(receiving:Boolean) {}
         override fun onIceGatheringChange(state:PeerConnection.IceGatheringState) {
@@ -709,6 +734,8 @@ class WebRtcClient(
         ReturnedVideoBus.setStreamAvailable(false)
         connectJob?.cancel()
         reconnectJob?.cancel()
+        graceJob?.cancel()
+        graceJob=null
         statsJob?.cancel()
         closeLiveSocket("stopped")
         if(networkCallbackRegistered) {

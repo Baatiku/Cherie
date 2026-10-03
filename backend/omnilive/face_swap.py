@@ -358,8 +358,11 @@ def paste_back(
         for extra in extra_masks:
             if extra.shape[:2] != (size, size):
                 extra = cv2.resize(extra, (size, size), interpolation=cv2.INTER_LINEAR)
-            # Occlusion masks gate visibility cleanly without hard core override
             alpha = alpha * np.clip(extra.astype(np.float32), 0.0, 1.0)
+    # The face core always pastes at full strength: an uneven occlusion cut
+    # must never leave half a moustache (or half a mouth) behind.
+    core = _face_oval(size, template, grow=0.72)
+    alpha = np.maximum(alpha, core)
     region_mask = cv2.warpAffine(
         alpha,
         local,
@@ -563,8 +566,6 @@ class SwapStream:
     last_seen: float = field(default_factory=time.perf_counter)
 
     raw_kps: np.ndarray | None = None          # unfiltered detector kps (used for extrapolation)
-    tone_ema: np.ndarray = field(default_factory=lambda: np.zeros(3, dtype=np.float32))
-    tone_ema_ready: bool = False               # False until first frame initialises the EMA
 
     def configure(self, profile_name: str) -> None:
         if self.budget is None or self.profile_name != profile_name:
@@ -723,7 +724,7 @@ class FaceSwapEngine:
                 return None
             vector = embedding.reshape(1, -1) @ emap
             mapped = (vector / (float(np.linalg.norm(vector)) + 1e-9)).astype(np.float32)
-        interior = _face_oval(112, "arcface_112") > 127.0
+        interior = _face_oval(112, "arcface_112") > 0.5
         tone_lab = cv2.cvtColor(aligned, cv2.COLOR_RGB2LAB).astype(np.float32)
         face_pixels = tone_lab[interior]
         tone_mean = face_pixels.mean(axis=0).astype(np.float32)
@@ -1072,34 +1073,13 @@ class FaceSwapEngine:
             swapped, model_masks = self._swap_crop(aligned, latent, size)
             if swapped is None:
                 raise RuntimeError("swapper produced no face")
-            # ── Rank 9: EMA-smooth the live LAB skin stats across frames ──────────────
-            # A single noisy/compressed frame causes the target_mean to jump, making
-            # the colour transfer jitter. α=0.15 means the transfer chases real lighting
-            # changes (τ ≈ 6 frames) rather than reacting to every frame's codec noise.
-            _TONE_EMA_ALPHA = 0.15
-            try:
-                _tmp_lab = cv2.cvtColor(aligned, cv2.COLOR_RGB2LAB).astype(np.float32)
-                _sz = aligned.shape[0]
-                _yy, _xx = np.mgrid[0:_sz, 0:_sz].astype(np.float32)
-                _mask = (((_xx - _sz * 0.5) / (_sz * 0.32)) ** 2
-                         + ((_yy - _sz * 0.50) / (_sz * 0.44)) ** 2) <= 1.0
-                _live_mean = _tmp_lab[_mask].mean(axis=0).astype(np.float32)
-                if not context.tone_ema_ready:
-                    context.tone_ema = _live_mean.copy()
-                    context.tone_ema_ready = True
-                else:
-                    context.tone_ema = (
-                        _TONE_EMA_ALPHA * _live_mean
-                        + (1.0 - _TONE_EMA_ALPHA) * context.tone_ema
-                    )
-            except Exception:
-                pass  # never let EMA computation break the frame
-
-            # ── Rank 3: colour-correct first, then sharpen ────────────────────────────
-            # GPEN sharpens swapper output at the reference identity's skin tone.
-            # Doing colour match first means the enhancer sharpens the live-matched
-            # pixels → no colour fringing at sharpened edges (lips, eyes).
-            swapped = _match_target_skin(swapped, aligned, amount=1.0)
+            # Skin tone comes from the REFERENCE photo (user requirement):
+            # full reference tone in the face center fading to live tone at
+            # the edge, so identity tone holds with no visible seam.
+            tone = self.source_tone(stream_key)
+            if tone is not None:
+                oval_map = np.clip(_face_oval(size, template), 0.0, 1.0)
+                swapped = _match_skin(swapped, tone[0], tone[1], oval_map)
             swapped = self._enhance(swapped, size)
 
             neural_ms = (time.perf_counter() - started) * 1000.0
@@ -1175,11 +1155,14 @@ class FaceSwapEngine:
         size = int(self.spec["crop"])
         template = str(self.spec["template"])
 
-        # Extrapolate motion for up to 3 frames (~100ms) to bridge quick head turns / detector blinks
+        # Extrapolate motion for up to 2 frames and only while nearly still:
+        # sliding the swap along a fast-moving guess is what makes it
+        # shimmer detached from the real face.
         if (
             context.cached_crop is not None
             and context.kps is not None
-            and context.missed_frames <= 3
+            and context.missed_frames <= 2
+            and context.last_speed <= STILL_SPEED_PX
             and (now - context.cached_at) <= STILL_FREEZE_SECONDS
         ):
             # Use raw (unfiltered) kps as extrapolation base: context.kps is One Euro

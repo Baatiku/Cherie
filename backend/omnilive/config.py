@@ -34,12 +34,13 @@ class Settings:
     model_allow_cpu_fallback: bool = _bool("OMNILIVE_MODEL_ALLOW_CPU_FALLBACK", False)
     model_retry_cooldown_seconds: float = float(os.getenv("OMNILIVE_MODEL_RETRY_COOLDOWN_SECONDS", "1.5"))
     model_provider_quarantine_seconds: float = float(os.getenv("OMNILIVE_MODEL_PROVIDER_QUARANTINE_SECONDS", "30"))
-    ice_urls: tuple[str, ...] = _csv(
-        "OMNILIVE_ICE_URLS",
-        "stun:stun.l.google.com:19302,turn:openrelay.metered.ca:80,turn:openrelay.metered.ca:443,turn:openrelay.metered.ca:443?transport=tcp",
-    )
-    ice_username: str = os.getenv("OMNILIVE_ICE_USERNAME", "openrelayproject")
-    ice_credential: str = os.getenv("OMNILIVE_ICE_CREDENTIAL", "openrelayproject")
+    # NOTE: STUN-only by default. A public demo relay was tried here and
+    # made working direct connections worse (relay nominated, then stalled).
+    # Add a real TURN server via OMNILIVE_ICE_URLS only when direct paths
+    # actually fail on the target network.
+    ice_urls: tuple[str, ...] = _csv("OMNILIVE_ICE_URLS", "stun:stun.l.google.com:19302")
+    ice_username: str = os.getenv("OMNILIVE_ICE_USERNAME", "")
+    ice_credential: str = os.getenv("OMNILIVE_ICE_CREDENTIAL", "")
     turn_shared_secret: str = os.getenv("OMNILIVE_TURN_SHARED_SECRET", "")
     turn_credential_ttl_seconds: int = int(os.getenv("OMNILIVE_TURN_CREDENTIAL_TTL_SECONDS", "900"))
     turn_user: str = os.getenv("OMNILIVE_TURN_USER", "omnilive")

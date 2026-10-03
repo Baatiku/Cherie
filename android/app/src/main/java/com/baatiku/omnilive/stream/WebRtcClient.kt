@@ -657,7 +657,11 @@ class WebRtcClient(
         override fun onSignalingChange(state:PeerConnection.SignalingState) {}
         override fun onIceConnectionChange(state:PeerConnection.IceConnectionState) {
             LiveTelemetry.update { it.copy(iceState=state.name.lowercase()) }
-            if(state==PeerConnection.IceConnectionState.FAILED || state==PeerConnection.IceConnectionState.DISCONNECTED) scheduleReconnect()
+            // DISCONNECTED is a transient ICE state (normal during initial gathering
+            // and brief network hiccups). Reconnecting immediately on DISCONNECTED
+            // cancels the ongoing connect job and leaves the session stuck at idle.
+            // Only react to FAILED, which is unrecoverable without a new offer/answer.
+            if(state==PeerConnection.IceConnectionState.FAILED) scheduleReconnect()
         }
         override fun onConnectionChange(state:PeerConnection.PeerConnectionState) {
             LiveTelemetry.update { it.copy(connectionState=state.name.lowercase()) }
@@ -666,7 +670,10 @@ class WebRtcClient(
                 reconnectJob?.cancel()
                 reconnectJob=null
             }
-            if(state==PeerConnection.PeerConnectionState.FAILED || state==PeerConnection.PeerConnectionState.DISCONNECTED) scheduleReconnect()
+            // Same as above: DISCONNECTED at the peer-connection level is also
+            // transient. The server holds the session for 15 s after a disconnect;
+            // the client should do the same and only force-reconnect on FAILED.
+            if(state==PeerConnection.PeerConnectionState.FAILED) scheduleReconnect()
         }
         override fun onIceConnectionReceivingChange(receiving:Boolean) {}
         override fun onIceGatheringChange(state:PeerConnection.IceGatheringState) {

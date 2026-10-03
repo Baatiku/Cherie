@@ -202,7 +202,16 @@ async def close_peer(session_id: str) -> None:
     if track is not None:
         track.stop()
     if pc is not None and pc.connectionState != "closed":
-        await pc.close()
+        # Yield one event-loop tick before closing the peer connection.
+        # aioice queues STUN retry callbacks via loop.call_later(); if we
+        # close the UDP socket synchronously they fire on a None transport
+        # and crash with AttributeError. A single yield lets those callbacks
+        # observe the closed state and bail cleanly.
+        await asyncio.sleep(0)
+        try:
+            await asyncio.wait_for(pc.close(), timeout=5.0)
+        except (asyncio.TimeoutError, Exception) as exc:
+            logger.debug("peer close timed out or failed: %s", exc)
 
 
 async def accept_offer(body: WebRtcOffer, timing_bridge: FrameTimingBridge | None = None) -> WebRtcAnswer:
@@ -227,8 +236,22 @@ async def accept_offer(body: WebRtcOffer, timing_bridge: FrameTimingBridge | Non
 
     @pc.on("connectionstatechange")
     async def on_connection_state_change():
-        if pc.connectionState in {"failed", "closed", "disconnected"}:
+        # "disconnected" is a *transient* ICE state — the browser/Android client
+        # will retry and typically reconnects within a few seconds on mobile.
+        # Closing immediately on "disconnected" kills the session on every
+        # brief network hiccup. Only clean up on truly terminal states.
+        if pc.connectionState in {"failed", "closed"}:
             await close_peer(state.session_id)
+        elif pc.connectionState == "disconnected":
+            # Give the ICE agent 15 s to self-heal (normal on mobile handoffs).
+            # If the state is still disconnected (or worse) after the grace
+            # period, tear down. Using a task so we don't block the event.
+            async def _deferred_close():
+                await asyncio.sleep(15.0)
+                if pc.connectionState in {"disconnected", "failed"}:
+                    logger.info("peer %s still disconnected after grace period, closing", state.session_id)
+                    await close_peer(state.session_id)
+            asyncio.ensure_future(_deferred_close())
 
     try:
         await pc.setRemoteDescription(RTCSessionDescription(sdp=body.sdp, type=body.type))

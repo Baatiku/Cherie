@@ -6,6 +6,7 @@ import android.net.Network
 import android.net.NetworkCapabilities
 import android.os.SystemClock
 import android.view.Surface
+import com.baatiku.omnilive.diagnostics.ServiceLog
 import com.baatiku.omnilive.net.LiveSession
 import com.baatiku.omnilive.net.SessionApi
 import kotlinx.coroutines.*
@@ -155,6 +156,7 @@ class WebRtcClient(
         if(stopped.get()) return
         connectJob?.cancel()
         cancelGraceReconnect()
+        ServiceLog.append(context,"net","connect $baseUrl profile=$activeProfileName")
         frameMarksEnabled=false
         ReturnedVideoBus.setStreamAvailable(false)
         frameLatency.reset()
@@ -433,6 +435,7 @@ class WebRtcClient(
                                 json.getString("token"),
                                 json.getLong("expires_at")
                             )
+                            ServiceLog.append(context,"net","answer received session active")
                             val answerSdp=json.getString("sdp")
                             val answerType=json.optString("type","answer")
                             sendReferenceImage(webSocket)
@@ -495,12 +498,14 @@ class WebRtcClient(
             override fun onFailure(webSocket:WebSocket,t:Throwable,response:Response?) {
                 if(webSocket!==liveSocket || stopped.get()) return
                 liveSocket=null
+                ServiceLog.append(context,"net","socket failed: ${t.message ?: t.javaClass.simpleName}")
                 fail(t.message ?: "Live signalling socket failed")
             }
 
             override fun onClosed(webSocket:WebSocket,code:Int,reason:String) {
                 if(webSocket!==liveSocket || stopped.get()) return
                 liveSocket=null
+                ServiceLog.append(context,"net","socket closed $code $reason")
                 scheduleReconnect()
             }
         }
@@ -525,6 +530,7 @@ class WebRtcClient(
 
     private fun fail(message:String) {
         if(stopped.get()) return
+        ServiceLog.append(context,"net","fail: $message")
         LiveTelemetry.update { it.copy(connectionState="failed",lastError=message) }
         scheduleReconnect()
     }

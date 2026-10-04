@@ -33,6 +33,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.baatiku.omnilive.diagnostics.DeviceDiagnostics
 import com.baatiku.omnilive.diagnostics.LiveDiagnostics
 import com.baatiku.omnilive.diagnostics.RootLabDiagnosticsReader
+import com.baatiku.omnilive.diagnostics.ServiceLog
 import com.baatiku.omnilive.net.TransportPreflight
 import com.baatiku.omnilive.stream.LiveSessionPhase
 import com.baatiku.omnilive.stream.LiveSessionState
@@ -57,6 +58,7 @@ private val OmniDanger=Color(0xFFFF7A7A)
 class MainActivity:ComponentActivity() {
     override fun onCreate(savedInstanceState:Bundle?) {
         super.onCreate(savedInstanceState)
+        ServiceLog.installCrashHandler(this)
         setContent {
             MaterialTheme(
                 colorScheme=darkColorScheme(
@@ -152,6 +154,7 @@ private fun OmniLiveApp() {
             permissionLauncher.launch(Manifest.permission.CAMERA)
             return
         }
+        ServiceLog.append(context,"ui","Start tapped profile=$profile backend=$backendUrl")
         val intent=Intent(context,LiveStreamService::class.java)
             .putExtra("profile",profile)
             .putExtra("effect","face_swap")
@@ -160,10 +163,15 @@ private fun OmniLiveApp() {
         runCatching {
             LiveSessionState.starting(profile,"face_swap",backendUrl)
             ContextCompat.startForegroundService(context,intent)
-        }.onFailure { LiveSessionState.failed(it) }
+            ServiceLog.append(context,"ui","service start requested")
+        }.onFailure {
+            ServiceLog.append(context,"ui","service start FAILED: ${it.message}")
+            LiveSessionState.failed(it)
+        }
     }
 
     fun stopSession() {
+        ServiceLog.append(context,"ui","Stop tapped")
         LiveSessionState.stopping()
         context.stopService(Intent(context,LiveStreamService::class.java))
     }
@@ -225,6 +233,12 @@ private fun OmniLiveApp() {
                 backendChecking=backendChecking,
                 backendCheckStatus=backendCheckStatus,
                 copiedStatus=copiedStatus,
+                serviceLog=ServiceLog.readTail(context),
+                crashReport=ServiceLog.readCrash(context),
+                onClearCrash={
+                    ServiceLog.clearCrash(context)
+                    copiedStatus="Crash report cleared"
+                },
                 onProfileChange={
                     profile=it
                     prefs.edit().putString("profile",it).apply()
@@ -266,6 +280,14 @@ private fun OmniLiveApp() {
                                 }
                                 appendLine()
                                 append(LiveDiagnostics.asText(telemetry))
+                                appendLine()
+                                appendLine("Service log:")
+                                appendLine(ServiceLog.readTail(context,60))
+                                ServiceLog.readCrash(context)?.let {
+                                    appendLine()
+                                    appendLine("Last crash:")
+                                    appendLine(it)
+                                }
                             }
                         )
                     )
@@ -499,6 +521,9 @@ private fun SettingsScreen(
     backendChecking:Boolean,
     backendCheckStatus:String?,
     copiedStatus:String?,
+    serviceLog:String,
+    crashReport:String?,
+    onClearCrash:()->Unit,
     onProfileChange:(String)->Unit,
     onBackendChange:(String)->Unit,
     onToggleAdvanced:()->Unit,
@@ -557,6 +582,19 @@ private fun SettingsScreen(
                         color=OmniMuted,
                         style=MaterialTheme.typography.labelSmall
                     )
+                    HorizontalDivider()
+                    Text("Service log",style=MaterialTheme.typography.titleSmall,fontWeight=FontWeight.Medium)
+                    Text(
+                        "What the camera service did, step by step. If Start does nothing, the answer is here.",
+                        color=OmniMuted,
+                        style=MaterialTheme.typography.bodySmall
+                    )
+                    crashReport?.let {
+                        Text("Last crash:",color=OmniDanger,style=MaterialTheme.typography.labelMedium)
+                        Text(it,color=OmniText,style=MaterialTheme.typography.bodySmall)
+                        TextButton(onClick=onClearCrash,modifier=Modifier.fillMaxWidth()) { Text("Clear crash report") }
+                    }
+                    Text(serviceLog,color=OmniMuted,style=MaterialTheme.typography.bodySmall)
                 }
             }
         }

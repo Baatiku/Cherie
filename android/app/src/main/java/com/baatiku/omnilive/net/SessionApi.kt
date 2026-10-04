@@ -28,8 +28,8 @@ object SessionApi {
     private fun connection(url:String,method:String):HttpURLConnection {
         return (URL(url).openConnection() as HttpURLConnection).apply {
             requestMethod=method
-            connectTimeout=15000
-            readTimeout=45000
+            connectTimeout=10000
+            readTimeout=25000
             setRequestProperty("Content-Type","application/json")
         }
     }

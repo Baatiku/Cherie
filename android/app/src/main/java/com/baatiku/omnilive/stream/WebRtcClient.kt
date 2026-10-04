@@ -275,6 +275,7 @@ class WebRtcClient(
             if(!stopped.get() && !localDescriptionReady) {
                 val local=peer?.localDescription
                 if(local!=null) {
+                    ServiceLog.append(context,"net","gathering slow, dialling with partial candidates")
                     localDescriptionReady=true
                     openLiveSocket(local.description)
                 }
@@ -544,6 +545,7 @@ class WebRtcClient(
         val jitterMs=(Math.random()*1000.0).toLong()
         val delayMs=baseDelayMs+jitterMs
         LiveTelemetry.update { it.copy(connectionState="reconnecting",lastError="Retry in "+delayMs+" ms") }
+        ServiceLog.append(context,"net","reconnect attempt $reconnectAttempts in ${delayMs}ms")
         reconnectJob=scope.launch {
             delay(delayMs)
             if(!stopped.get()) connect()
@@ -691,7 +693,10 @@ class WebRtcClient(
         override fun onSignalingChange(state:PeerConnection.SignalingState) {}
         override fun onIceConnectionChange(state:PeerConnection.IceConnectionState) {
             LiveTelemetry.update { it.copy(iceState=state.name.lowercase()) }
-            if(state==PeerConnection.IceConnectionState.FAILED) scheduleReconnect()
+            if(state==PeerConnection.IceConnectionState.FAILED) {
+                ServiceLog.append(context,"net","ICE failed, reconnecting")
+                scheduleReconnect()
+            }
             else if(state==PeerConnection.IceConnectionState.DISCONNECTED) scheduleGraceReconnect()
             else if(state==PeerConnection.IceConnectionState.CONNECTED) cancelGraceReconnect()
         }
@@ -714,6 +719,7 @@ class WebRtcClient(
         override fun onIceConnectionReceivingChange(receiving:Boolean) {}
         override fun onIceGatheringChange(state:PeerConnection.IceGatheringState) {
             if(state==PeerConnection.IceGatheringState.COMPLETE && !localDescriptionReady) {
+                ServiceLog.append(context,"net","gathering complete")
                 localDescriptionReady=true
                 val local=peer?.localDescription ?: return
                 openLiveSocket(local.description)

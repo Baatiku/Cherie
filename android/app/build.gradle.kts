@@ -43,7 +43,7 @@ android {
         applicationId = "com.baatiku.omnilive"
         minSdk = 26
         targetSdk = 35
-        versionCode = 13
+        versionCode = 14
         versionName = "0.7.0"
         buildConfigField("String", "DEFAULT_BACKEND_URL", "\"${defaultBackendUrl.replace("\"", "")}\"")
         buildConfigField("boolean", "ROOT_LAB_ENABLED", rootLabEnabled.toString())

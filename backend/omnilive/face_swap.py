@@ -75,12 +75,12 @@ _ARCFACE_128 = np.array(
     dtype=np.float32,
 )
 
-# Freeze instead of leaking the real face: brief hold covers blinks, nods
-# and zoom steps. Extrapolation carries fast motion for a few frames;
-# a longer loss still clears so no stale swap ever floats around.
-STILL_FREEZE_SECONDS = 0.8
+# Freeze instead of leaking the real face: brief hold covers blinks only.
+# Extrapolation carries fast motion for a couple frames, then clears fast
+# so the swap follows you instead of floating stuck when you move.
+STILL_FREEZE_SECONDS = 0.35
 STILL_SPEED_PX = 25.0  # raised: nod-down / zoom shifts easily exceed 12 px/frame
-HOLD_FRAMES = 5
+HOLD_FRAMES = 2
 ROI_SCORE = 0.30
 # Acquisition accepts the low-threshold scan when keypoints exist (profile,
 # pitch-down, small/zoomed-out faces score low but align fine). Box-only
@@ -1144,10 +1144,12 @@ class FaceSwapEngine:
         if not tracked or context.kps is None:
             return self._no_face(rgb, context, width, height, now)
 
-        # Mouth dynamics check: force neural inference on speech / phoneme transitions
+        # Mouth dynamics check: force neural inference on speech / phoneme transitions.
+        # 0.10 threshold: any visible open makes a fresh face at once, so the
+        # cached closed mouth never stretches over an open mouth.
         mouth_open = float(np.linalg.norm(context.kps[4] - context.kps[3]))
         mouth_delta = abs(mouth_open - context.cached_mouth_open) / max(mouth_open, 1e-4)
-        force_mouth_inference = mouth_delta > 0.18
+        force_mouth_inference = mouth_delta > 0.10
 
         if not budget.should_infer(now) and not force_mouth_inference:
             dropped_inference_counter.increment()

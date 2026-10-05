@@ -57,9 +57,11 @@ def current_ice_config() -> IceConfig:
             # STUN never needs TURN REST credentials.
             servers.append(IceServer(urls=stun_urls))
         if turn_urls:
-            servers.append(IceServer(urls=turn_urls, username=username, credential=credential))
+            for url in turn_urls:
+                servers.append(IceServer(urls=[url], username=username, credential=credential))
         if not servers:
-            servers.append(IceServer(urls=urls, username=username, credential=credential))
+            for url in urls:
+                servers.append(IceServer(urls=[url], username=username, credential=credential))
         return IceConfig(
             servers=servers,
             credential_mode="rest_shared_secret",
@@ -70,13 +72,14 @@ def current_ice_config() -> IceConfig:
         if stun_urls:
             servers.append(IceServer(urls=stun_urls))
         if turn_urls:
-            servers.append(
-                IceServer(
-                    urls=turn_urls,
-                    username=settings.ice_username,
-                    credential=settings.ice_credential,
+            for url in turn_urls:
+                servers.append(
+                    IceServer(
+                        urls=[url],
+                        username=settings.ice_username,
+                        credential=settings.ice_credential,
+                    )
                 )
-            )
         return IceConfig(
             servers=servers,
             credential_mode="static",

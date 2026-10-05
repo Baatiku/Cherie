@@ -269,9 +269,9 @@ class WebRtcClient(
             override fun onCreateFailure(error:String) { fail(error) }
         },constraints)
         // Fallback if ICE gathering stalls behind restrictive NAT: proceed with
-        // whatever local candidates exist after 3.5s instead of never dialling.
+        // whatever local candidates exist after 7s instead of never dialling.
         scope.launch {
-            delay(3500)
+            delay(7000)
             if(!stopped.get() && !localDescriptionReady) {
                 val local=peer?.localDescription
                 if(local!=null) {

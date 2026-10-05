@@ -75,12 +75,18 @@ _ARCFACE_128 = np.array(
     dtype=np.float32,
 )
 
-# Freeze instead of leaking the real face: only when the face was nearly
-# still just before the loss (blink, brief cover). A fast-moving loss
-# (head turn) clears immediately, so no stale swap ever floats around.
-STILL_FREEZE_SECONDS = 0.5
-STILL_SPEED_PX = 12.0  # raised from 3.0 — handheld tremor / breathing easily exceeds 3 px/frame
+# Freeze instead of leaking the real face: brief hold covers blinks, nods
+# and zoom steps. Extrapolation carries fast motion for a few frames;
+# a longer loss still clears so no stale swap ever floats around.
+STILL_FREEZE_SECONDS = 0.8
+STILL_SPEED_PX = 25.0  # raised: nod-down / zoom shifts easily exceed 12 px/frame
+HOLD_FRAMES = 5
 ROI_SCORE = 0.30
+# Acquisition accepts the low-threshold scan when keypoints exist (profile,
+# pitch-down, small/zoomed-out faces score low but align fine). Box-only
+# hits still need the strict confidence to avoid false tracks.
+ACQUIRE_KPS_SCORE = 0.30
+MIN_FACE_PX = 28
 
 ENGINES = {
     "inswapper": {
@@ -185,6 +191,12 @@ def _similarity(src5: np.ndarray, dst5: np.ndarray) -> np.ndarray | None:
         # If horizontal distance foreshortened significantly relative to vertical (yaw > 30 deg)
         if current_ratio < 0.75 * canonical_ratio:
             scale = max(scale, vert_scale * 0.88)
+        # Pitch robustness (nod down/up): vertical eye->mouth compresses while
+        # eye distance stays. Fall back to the horizontal baseline so the
+        # crop does not collapse and drop the face on a nod.
+        elif current_ratio > 1.35 * canonical_ratio and src_eye_dist > 1e-4:
+            horiz_scale = dst_eye_dist / src_eye_dist
+            scale = max(scale, horiz_scale * 0.88)
 
     translation = mu_dst - scale * (rotation @ mu_src)
     matrix = np.hstack([scale * rotation, translation.reshape(2, 1)])
@@ -354,15 +366,24 @@ def paste_back(
         borderMode=cv2.BORDER_REPLICATE,
     )
     alpha = _face_oval(size, template)
+    has_model_mask = False
     if extra_masks:
         for extra in extra_masks:
             if extra.shape[:2] != (size, size):
                 extra = cv2.resize(extra, (size, size), interpolation=cv2.INTER_LINEAR)
-            alpha = alpha * np.clip(extra.astype(np.float32), 0.0, 1.0)
-    # The face core always pastes at full strength: an uneven occlusion cut
-    # must never leave half a moustache (or half a mouth) behind.
-    core = _face_oval(size, template, grow=0.72)
-    alpha = np.maximum(alpha, core)
+            extra_f = np.clip(extra.astype(np.float32), 0.0, 1.0)
+            # Ignore degenerate masks (all 0 / all 1): they carry no face
+            # shape info and would either erase the swap or force it flat.
+            if extra_f.mean() < 0.005 or extra_f.mean() > 0.995:
+                continue
+            has_model_mask = True
+            alpha = alpha * extra_f
+    if not has_model_mask:
+        # No model/occluder guidance (e.g. inswapper with xseg off): keep a
+        # soft face core so the swap holds together, but at reduced strength
+        # so hair/background never turns into flat mask color.
+        core = _face_oval(size, template, grow=0.72) * 0.85
+        alpha = np.maximum(alpha * 0.9, core * 0.85)
     region_mask = cv2.warpAffine(
         alpha,
         local,
@@ -692,7 +713,9 @@ class FaceSwapEngine:
         if cached is not None:
             self._source_ready = True
             return cached["latent_mapped"] if self.spec["mapped"] else cached["latent"]
-        detections = [r for r in self.detector.detect(rgb) if r.kps is not None]
+        detections = [r for r in self.scan_detector.detect(rgb) if r.kps is not None]
+        if not detections:
+            detections = [r for r in self.detector.detect(rgb) if r.kps is not None]
         if not detections:
             logger.warning("no alignable face in reference image for stream %s", stream_key)
             self._source_ready = False
@@ -708,12 +731,37 @@ class FaceSwapEngine:
             self._source_ready = False
             return None
         meta = session.get_inputs()[0]
-        # RGB stays RGB: the models train on RGB, so no channel swap.
-        blob = cv2.dnn.blobFromImage(
-            aligned, 1.0 / 127.5, (112, 112), (127.5, 127.5, 127.5), swapRB=False
-        )
-        with self._meta_lock:
-            embedding = np.asarray(session.run(None, {meta.name: blob})[0]).reshape(-1)
+
+        def _embed(crop: np.ndarray) -> np.ndarray | None:
+            # RGB stays RGB: the models train on RGB, so no channel swap.
+            blob = cv2.dnn.blobFromImage(
+                crop, 1.0 / 127.5, (112, 112), (127.5, 127.5, 127.5), swapRB=False
+            )
+            try:
+                with self._meta_lock:
+                    vec = np.asarray(session.run(None, {meta.name: blob})[0]).reshape(-1)
+            except Exception:
+                return None
+            n = float(np.linalg.norm(vec)) + 1e-9
+            return (vec / n).astype(np.float32)
+
+        # Pose-robust identity: average the frontal crop with mirror and
+        # small rotations. One photo still works, but side/nod poses now
+        # match the same person instead of dropping to a mask color.
+        crops = [aligned]
+        try:
+            crops.append(cv2.flip(aligned, 1))
+            center = (56.0, 56.0)
+            for ang in (10.0, -10.0):
+                rot = cv2.getRotationMatrix2D(center, ang, 1.0)
+                crops.append(cv2.warpAffine(aligned, rot, (112, 112), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE))
+        except Exception:
+            pass
+        vecs = [v for v in (_embed(c) for c in crops) if v is not None]
+        if not vecs:
+            self._source_ready = False
+            return None
+        embedding = np.mean(np.stack(vecs), axis=0).astype(np.float32)
         norm = float(np.linalg.norm(embedding)) + 1e-9
         embedding = (embedding / norm).astype(np.float32)
         mapped = None
@@ -877,9 +925,11 @@ class FaceSwapEngine:
             return matrix
 
         tx, ty, scale, angle = _decompose_similarity(matrix)
-        # Moderate motion: looser beta so the filter chases position quickly
+        # Moderate motion: looser beta so the filter chases position quickly.
+        # Scale beta raised (was 0.005): zoom-out steps must be followed
+        # within a few frames or the swap visibly slides behind the face.
         beta_tx = 0.08 if speed > 5.0 else 0.03
-        beta_scale = 0.02 if speed > 5.0 else 0.005
+        beta_scale = 0.05 if speed > 5.0 else 0.02
         beta_angle = 0.04 if speed > 5.0 else 0.01
 
         if len(context.pose_euro) != 4:
@@ -912,24 +962,43 @@ class FaceSwapEngine:
         h, w = rgb.shape[:2]
         found = []
 
-        # Fast ROI path: if already tracking, detect inside a padded sub-window
+        def _with_box_kps(region: Region, dx: int = 0, dy: int = 0) -> Region:
+            # Box-fallback keypoints: pitch-down / profile faces often come
+            # back with a box but no 5-point kps. Estimate ArcFace-order
+            # points from box geometry so tracking never drops the face.
+            if region.kps is not None:
+                return region
+            bw = float(max(1, region.width))
+            bh = float(max(1, region.height))
+            pts = (
+                (region.x + bw * 0.35 + dx, region.y + bh * 0.40 + dy),
+                (region.x + bw * 0.65 + dx, region.y + bh * 0.40 + dy),
+                (region.x + bw * 0.50 + dx, region.y + bh * 0.55 + dy),
+                (region.x + bw * 0.38 + dx, region.y + bh * 0.75 + dy),
+                (region.x + bw * 0.62 + dx, region.y + bh * 0.75 + dy),
+            )
+            return Region(region.x + dx, region.y + dy, region.width, region.height, region.score * 0.9, pts)
+
+        # Fast ROI path: if already tracking, detect inside a padded sub-window.
+        # Generous pad (60% + extra vertical) keeps nod-down and zoom steps
+        # inside the window; small faces (zoom-out) are allowed down to 32px.
         if context.box is not None and context.missed_frames == 0:
             # Region uses x, y, width, height — compute corners from those fields
             bx1, by1 = context.box.x, context.box.y
             bx2, by2 = context.box.x + context.box.width, context.box.y + context.box.height
             bw, bh = bx2 - bx1, by2 - by1
-            pad_x, pad_y = int(bw * 0.35), int(bh * 0.35)
+            pad_x, pad_y = int(bw * 0.60), int(bh * 0.70)
             rx1, ry1 = max(0, bx1 - pad_x), max(0, by1 - pad_y)
             rx2, ry2 = min(w, bx2 + pad_x), min(h, by2 + pad_y)
-            if (rx2 - rx1) > 64 and (ry2 - ry1) > 64:
+            if (rx2 - rx1) >= 32 and (ry2 - ry1) >= 32:
                 roi = rgb[ry1:ry2, rx1:rx2]
                 try:
-                    roi_found = [r for r in self.scan_detector.detect(roi) if r.kps is not None]
+                    roi_found = list(self.scan_detector.detect(roi))
                     if roi_found:
+                        roi_found = [_with_box_kps(r) for r in roi_found]
                         best_roi = max(roi_found, key=lambda r: (r.score, r.area))
-                        if best_roi.score >= ROI_SCORE:
+                        if best_roi.score >= ROI_SCORE and best_roi.kps is not None:
                             # Translate ROI-local coords back to full-frame coords.
-                            # Region(x, y, width, height, score, kps)
                             found = [
                                 Region(
                                     best_roi.x + rx1,
@@ -946,7 +1015,9 @@ class FaceSwapEngine:
         # Full scan fallback if ROI was not attempted or did not detect
         if not found:
             try:
-                found = [r for r in self.scan_detector.detect(rgb) if r.kps is not None]
+                scanned = list(self.scan_detector.detect(rgb))
+                found = [_with_box_kps(r) for r in scanned if r.kps is not None or True]
+                found = [r for r in found if r.kps is not None]
             except Exception as exc:
                 logger.warning("swap tracking failed: %s", exc)
                 return False
@@ -956,9 +1027,16 @@ class FaceSwapEngine:
             return False
 
         best = max(found, key=lambda r: (r.score, r.area))
-        if context.box is None and best.score < settings.face_detector_confidence:
-            detector_window.add((time.perf_counter() - started) * 1000.0)
-            return False
+        # Small/zoomed-out faces are genuinely tiny — never drop them for size.
+        # Only guard against noise boxes below MIN_FACE_PX on acquisition.
+        if context.box is None:
+            has_real_kps = best.score >= ACQUIRE_KPS_SCORE
+            too_small = max(best.width, best.height) < MIN_FACE_PX
+            if not has_real_kps or too_small:
+                # One last chance: box-only hits need the strict threshold.
+                if best.score < settings.face_detector_confidence:
+                    detector_window.add((time.perf_counter() - started) * 1000.0)
+                    return False
 
         context.box = best
         fresh = np.asarray(best.kps, dtype=np.float32).reshape(5, 2)
@@ -1019,10 +1097,25 @@ class FaceSwapEngine:
             channels = shape[1] if len(shape) == 4 else 0
             if array.ndim == 4 and channels == 1:
                 masks.append(np.clip(array[0, 0], 0.0, 1.0).astype(np.float32))
-            elif decoded is None:
-                image = array[0].transpose(1, 2, 0) * denorm_mult + denorm_add
+                continue
+            if decoded is not None:
+                continue
+            # Only a real 3-channel image is a face. A mask mistaken for a
+            # face is exactly the "flat facemask color" bug, so verify.
+            try:
+                img4 = array[0]
+                if img4.ndim != 3 or img4.shape[0] not in (3, 4):
+                    continue
+                image = img4.transpose(1, 2, 0)[..., :3] * denorm_mult + denorm_add
+                image = np.nan_to_num(image, nan=128.0, posinf=255.0, neginf=0.0)
                 # Model output is RGB, matching our frames: no channel flip.
-                decoded = np.clip(image, 0.0, 255.0).astype(np.uint8)
+                cand = np.clip(image, 0.0, 255.0).astype(np.uint8)
+                # Reject flat-mask decodes: a real face always has variance.
+                if float(cand.std()) < 4.0:
+                    continue
+                decoded = cand
+            except Exception:
+                continue
         if decoded is None:
             return None, []
         return decoded, masks
@@ -1073,13 +1166,14 @@ class FaceSwapEngine:
             swapped, model_masks = self._swap_crop(aligned, latent, size)
             if swapped is None:
                 raise RuntimeError("swapper produced no face")
-            # Skin tone comes from the REFERENCE photo (user requirement):
-            # full reference tone in the face center fading to live tone at
-            # the edge, so identity tone holds with no visible seam.
-            tone = self.source_tone(stream_key)
-            if tone is not None:
-                oval_map = np.clip(_face_oval(size, template), 0.0, 1.0)
-                swapped = _match_skin(swapped, tone[0], tone[1], oval_map)
+            # Pro lighting rule: match the LIVE room light (chrominance-only,
+            # luminance clamped) so the swap never looks like flat mask paint.
+            # The reference identity stays in the swapper output itself; only
+            # the light color is borrowed from the current frame.
+            try:
+                swapped = _match_target_skin(swapped, aligned, amount=1.0)
+            except Exception as exc:
+                logger.debug("live skin match skipped: %s", exc)
             swapped = self._enhance(swapped, size)
 
             neural_ms = (time.perf_counter() - started) * 1000.0
@@ -1155,13 +1249,13 @@ class FaceSwapEngine:
         size = int(self.spec["crop"])
         template = str(self.spec["template"])
 
-        # Extrapolate motion for up to 2 frames and only while nearly still:
-        # sliding the swap along a fast-moving guess is what makes it
-        # shimmer detached from the real face.
+        # Motion hold for brief detector gaps (nod, zoom step, blink):
+        # extrapolate along velocity for a few frames so the swap rides the
+        # head instead of flashing the real face.
         if (
             context.cached_crop is not None
             and context.kps is not None
-            and context.missed_frames <= 2
+            and context.missed_frames <= HOLD_FRAMES
             and context.last_speed <= STILL_SPEED_PX
             and (now - context.cached_at) <= STILL_FREEZE_SECONDS
         ):
@@ -1216,6 +1310,42 @@ class FaceSwapEngine:
             "active_swap_streams": len(self._streams),
         }
 
+    def warmup(self) -> None:
+        """Pre-warm CUDA execution providers with dummy passes so live video has 0ms warmup lag."""
+        try:
+            logger.info("pre-warming face swap GPU kernels...")
+            dummy_img = np.full((128, 128, 3), 128, dtype=np.uint8)
+            try:
+                self.scan_detector.detect(dummy_img)
+            except Exception:
+                pass
+            arc_session = self.arcface.load()
+            if arc_session is not None:
+                meta = arc_session.get_inputs()[0]
+                dummy_arc = np.zeros((1, 3, 112, 112), dtype=np.float32)
+                with self._meta_lock:
+                    arc_session.run(None, {meta.name: dummy_arc})
+            swap_session = self.swapper.load()
+            if swap_session is not None:
+                inputs = swap_session.get_inputs()
+                target_meta = next(
+                    (m for m in inputs if "target" in m.name.lower()), inputs[0]
+                )
+                source_meta = next(
+                    (m for m in inputs if m.name != target_meta.name), None
+                )
+                crop_size = int(self.spec.get("crop", 128))
+                dummy_target = np.zeros((1, 3, crop_size, crop_size), dtype=np.float32)
+                feeds = {target_meta.name: dummy_target}
+                if source_meta is not None:
+                    dummy_latent = np.zeros((1, 512), dtype=np.float32)
+                    feeds[source_meta.name] = dummy_latent
+                with self._swap_lock:
+                    swap_session.run(None, feeds)
+            logger.info("face swap GPU kernels pre-warmed successfully")
+        except Exception as exc:
+            logger.warning("face swap pre-warm failed: %s", exc)
+
     def preload(self) -> dict:
         self.swapper.load()
         self.arcface.load()
@@ -1225,6 +1355,7 @@ class FaceSwapEngine:
             self.occluder.load()
         if self.spec["mapped"]:
             self._emap_matrix()
+        self.warmup()
         pipeline_health.update(
             face_swap_ready=self.available,
             swapper_backend=self.swapper.providers[0] if self.swapper.providers else "none",

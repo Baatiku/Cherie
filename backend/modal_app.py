@@ -46,6 +46,18 @@ app=modal.App("omnilive")
         "OMNILIVE_MODEL_ROOT": MODEL_ROOT,
         "OMNILIVE_BUILD_SHA": BUILD_SHA,
         "OMNILIVE_PRODUCTION": "1",
+        "OMNILIVE_SWAPPER_ENGINE": "hyper1c",
+        "OMNILIVE_ENHANCER_ENABLED": "false",
+        "OMNILIVE_XSEG_ENABLED": "true",
+        "OMNILIVE_ICE_URLS": (
+            "stun:stun.relay.metered.ca:80,"
+            "turn:global.relay.metered.ca:80,"
+            "turn:global.relay.metered.ca:80?transport=tcp,"
+            "turn:global.relay.metered.ca:443,"
+            "turns:global.relay.metered.ca:443?transport=tcp"
+        ),
+        "OMNILIVE_ICE_USERNAME": "ae3c22bd148853255a70cb99",
+        "OMNILIVE_ICE_CREDENTIAL": "BFMymojsZRgOwHdo",
     },
     scaledown_window=300,
     timeout=3600,

@@ -80,12 +80,16 @@ object SessionApi {
         val providers=if(providersArray==null) emptyList() else
             (0 until providersArray.length()).map { providersArray.optString(it) }
                 .filter { it.isNotBlank() }
+        val swap=json.optJSONObject("swap")
+        val faceSwapReady=json.optBoolean("face_swap_ready",false) || swap?.optBoolean("face_swap_available",false)==true
+        val isModelConfigured=json.optBoolean("configured",false) || faceSwapReady
+        val isModelLoaded=json.optBoolean("loaded",false) || (faceSwapReady && swap?.optJSONObject("swapper_model")?.optBoolean("loaded",false)==true)
         return BackendHealth(
             ok=json.optBoolean("ok",false),
             status=json.optString("status","unknown"),
             service=json.optString("service","unknown"),
-            modelConfigured=json.optBoolean("configured",false),
-            modelLoaded=json.optBoolean("loaded",false),
+            modelConfigured=isModelConfigured,
+            modelLoaded=isModelLoaded,
             providers=providers
         )
     }

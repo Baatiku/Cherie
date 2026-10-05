@@ -328,7 +328,7 @@ def telemetry_payload():
     landmark = landmark_window.snapshot()
     composite = compositor_window.snapshot()
     input_age = input_age_window.snapshot()
-    return {
+    payload = {
         "media_wait_p50_ms": media.p50_ms,
         "media_wait_p95_ms": media.p95_ms,
         "media_samples": media.count,
@@ -376,6 +376,14 @@ def telemetry_payload():
         **processor.swap_status(),
         **runtime.status(),
     }
+    swap_info = payload.get("swap", {})
+    if swap_info.get("face_swap_available", False) or payload.get("face_swap_ready", False):
+        payload["configured"] = True
+        swapper_loaded = bool(swap_info.get("swapper_model", {}).get("loaded", False))
+        payload["loaded"] = payload.get("loaded") or swapper_loaded
+        if payload.get("model_id") in (None, "none"):
+            payload["model_id"] = swap_info.get("swapper_engine", "inswapper")
+    return payload
 
 
 def _health_state(payload: dict) -> tuple[bool, str]:

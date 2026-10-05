@@ -34,13 +34,12 @@ class Settings:
     model_allow_cpu_fallback: bool = _bool("OMNILIVE_MODEL_ALLOW_CPU_FALLBACK", False)
     model_retry_cooldown_seconds: float = float(os.getenv("OMNILIVE_MODEL_RETRY_COOLDOWN_SECONDS", "1.5"))
     model_provider_quarantine_seconds: float = float(os.getenv("OMNILIVE_MODEL_PROVIDER_QUARANTINE_SECONDS", "30"))
-    # NOTE: STUN-only by default. A public demo relay was tried here and
-    # made working direct connections worse (relay nominated, then stalled).
-    # Add a real TURN server via OMNILIVE_ICE_URLS only when direct paths
-    # actually fail on the target network.
-    ice_urls: tuple[str, ...] = _csv("OMNILIVE_ICE_URLS", "stun:stun.l.google.com:19302")
-    ice_username: str = os.getenv("OMNILIVE_ICE_USERNAME", "")
-    ice_credential: str = os.getenv("OMNILIVE_ICE_CREDENTIAL", "")
+    ice_urls: tuple[str, ...] = _csv(
+        "OMNILIVE_ICE_URLS",
+        "stun:stun.relay.metered.ca:80,turn:global.relay.metered.ca:80,turn:global.relay.metered.ca:80?transport=tcp,turn:global.relay.metered.ca:443,turns:global.relay.metered.ca:443?transport=tcp",
+    )
+    ice_username: str = os.getenv("OMNILIVE_ICE_USERNAME", "ae3c22bd148853255a70cb99")
+    ice_credential: str = os.getenv("OMNILIVE_ICE_CREDENTIAL", "BFMymojsZRgOwHdo")
     turn_shared_secret: str = os.getenv("OMNILIVE_TURN_SHARED_SECRET", "")
     turn_credential_ttl_seconds: int = int(os.getenv("OMNILIVE_TURN_CREDENTIAL_TTL_SECONDS", "900"))
     turn_user: str = os.getenv("OMNILIVE_TURN_USER", "omnilive")
@@ -74,7 +73,7 @@ class Settings:
     )
     enhancer_enabled: bool = _bool("OMNILIVE_ENHANCER_ENABLED", True)
     enhancer_strength: float = float(os.getenv("OMNILIVE_ENHANCER_STRENGTH", "0.4"))
-    swapper_engine: str = os.getenv("OMNILIVE_SWAPPER_ENGINE", "inswapper").strip().lower()
+    swapper_engine: str = os.getenv("OMNILIVE_SWAPPER_ENGINE", "hyper1c").strip().lower()
     xseg_model: str = os.getenv(
         "OMNILIVE_XSEG_MODEL", "occluder/xseg_2.onnx"
     )

@@ -78,6 +78,11 @@ class Settings:
         "OMNILIVE_XSEG_MODEL", "occluder/xseg_2.onnx"
     )
     xseg_enabled: bool = _bool("OMNILIVE_XSEG_ENABLED", True)
+    # Beard removal: when ON, the lower face (mouth/chin/jaw) always pastes
+    # the reference skin, ignoring occluder/model masks there. The occluder
+    # often reads beard hair as background and would let the live beard show
+    # through. Trade-off: a hand covering the mouth may take some swapped skin.
+    beard_removal: bool = _bool("OMNILIVE_BEARD_REMOVAL", False)
     region_padding: float = float(os.getenv("OMNILIVE_REGION_PADDING", "0.22"))
     tracker_min_confidence: float = float(os.getenv("OMNILIVE_TRACKER_MIN_CONFIDENCE", "0.22"))
     processor_context_ttl_seconds: int = int(os.getenv("OMNILIVE_PROCESSOR_CONTEXT_TTL_SECONDS", "30"))

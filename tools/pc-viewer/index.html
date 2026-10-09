@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>OmniLive Desktop Dashboard</title>
+<style>
+  :root { color-scheme: dark; --bg: #0b0f14; --panel: #111823; --line: #223048; --accent: #4f46e5; --ok: #22c55e; --warn: #f59e0b; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: system-ui, -apple-system, sans-serif; background: var(--bg); color: #e8eef4; }
+  header.top { display: flex; align-items: center; gap: 12px; padding: 12px 20px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--bg); z-index: 5; }
+  .logo { width: 34px; height: 34px; border-radius: 10px; background: linear-gradient(135deg, #6366f1, #8b5cf6); display: grid; place-items: center; font-weight: 800; }
+  header.top h1 { font-size: 17px; margin: 0; }
+  header.top p { margin: 0; font-size: 12px; opacity: 0.7; }
+  .live-dot { margin-left: auto; display: flex; align-items: center; gap: 8px; font-size: 13px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: #64748b; }
+  .dot.on { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+  .layout { display: grid; grid-template-columns: 320px 1fr; min-height: calc(100vh - 59px); }
+  aside { border-right: 1px solid var(--line); padding: 16px; background: var(--panel); display: flex; flex-direction: column; gap: 14px; }
+  section.panel { background: #0d141d; border: 1px solid var(--line); border-radius: 12px; padding: 12px; }
+  section.panel h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; opacity: 0.7; margin: 0 0 8px; }
+  label { display: block; font-size: 13px; margin: 8px 0 4px; }
+  input, select { width: 100%; font-size: 14px; padding: 8px 10px; border-radius: 8px; border: 1px solid #33415c; background: var(--bg); color: #e8eef4; }
+  .row { display: flex; gap: 8px; }
+  button { flex: 1; font-size: 14px; padding: 10px; border-radius: 8px; border: none; cursor: pointer; background: var(--accent); color: white; font-weight: 600; }
+  button.secondary { background: #223048; }
+  button:disabled { opacity: 0.45; cursor: default; }
+  .steps { margin: 0; padding-left: 18px; font-size: 13px; line-height: 1.7; }
+  .steps b { color: #fff; }
+  main { padding: 16px 20px; display: flex; flex-direction: column; gap: 14px; max-width: 1100px; }
+  .videos { display: grid; grid-template-columns: 1fr 1.4fr; gap: 14px; }
+  .shot { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 10px; }
+  .shot h3 { margin: 0 0 8px; font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+  .tag { font-size: 11px; padding: 2px 8px; border-radius: 20px; background: #223048; }
+  .tag.out { background: #14532d; }
+  video { width: 100%; aspect-ratio: 16/9; background: #000; border-radius: 8px; }
+  #status { font-size: 13px; white-space: pre-wrap; background: #0d141d; border: 1px solid var(--line); padding: 12px; border-radius: 12px; min-height: 64px; }
+  .ref-preview { display: flex; gap: 10px; align-items: center; }
+  .ref-preview img { width: 52px; height: 52px; object-fit: cover; border-radius: 8px; border: 1px solid var(--line); display: none; }
+  @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } aside { border-right: none; border-bottom: 1px solid var(--line); } .videos { grid-template-columns: 1fr; } }
+  /* Clean output view: page shows ONLY the swapped face. Point OBS
+     Window Capture at this browser window and it can only see the face. */
+  body.solo { overflow: hidden; }
+  body.solo header.top, body.solo aside, body.solo #status,
+  body.solo .videos .shot:first-child, body.solo .shot h3, body.solo .shot .row { display: none; }
+  body.solo .layout { display: block; min-height: 0; }
+  body.solo main { max-width: none; padding: 0; }
+  body.solo .videos { display: block; }
+  body.solo .shot { border: none; border-radius: 0; padding: 0; background: #000; }
+  body.solo video#remote { width: 100vw; height: 100vh; aspect-ratio: auto; object-fit: contain; border-radius: 0; background: #000; }
+  #exitSolo { display: none; position: fixed; top: 10px; right: 10px; z-index: 50; flex: none; width: auto; padding: 8px 14px; opacity: 0.85; }
+  body.solo #exitSolo { display: block; }
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="logo">O</div>
+  <div><h1>OmniLive Desktop Dashboard</h1><p>PC webcam &rarr; GPU swap &rarr; virtual camera for Zoom / Meet / Teams</p></div>
+  <div class="live-dot"><span class="dot" id="liveDot"></span><span id="liveText">idle</span></div>
+  <button id="exitSolo" class="secondary">Exit face-only view</button>
+</header>
+<div class="layout">
+  <aside>
+    <section class="panel">
+      <h2>1 &middot; Connection</h2>
+      <label for="backend">Backend URL</label>
+      <input id="backend" value="https://baatiku--omnilive-api.modal.run" />
+      <label for="profile">Quality</label>
+      <select id="profile">
+        <option value="low_latency">low_latency &mdash; fastest</option>
+        <option value="balanced" selected>balanced &mdash; recommended</option>
+        <option value="high">high &mdash; sharpest</option>
+      </select>
+      <div class="row" style="margin-top:10px">
+        <button id="start">Start</button>
+        <button id="stop" class="secondary" disabled>Stop</button>
+      </div>
+    </section>
+    <section class="panel">
+      <h2>2 &middot; Face to wear</h2>
+      <input id="reference" type="file" accept="image/*" />
+      <div class="ref-preview"><img id="refImg" alt="" /><span id="refName" style="font-size:12px;opacity:.7">No photo picked yet</span></div>
+    </section>
+    <section class="panel">
+      <h2>3 &middot; Send to Zoom</h2>
+      <ol class="steps">
+        <li>Start above, wait for <b>LIVE</b> dot.</li>
+        <li>Press <b>Clean face-only view</b>: page shows only the face.</li>
+        <li>In OBS: <b>Window Capture</b> &rarr; this browser window.</li>
+        <li>OBS &rarr; <b>Start Virtual Camera</b>.</li>
+        <li>In Zoom/Meet: camera &rarr; <b>OBS Virtual Camera</b>.</li>
+      </ol>
+    </section>
+  </aside>
+  <main>
+    <div class="videos">
+      <div class="shot"><h3>Camera in <span class="tag">you</span></h3><video id="local" autoplay muted playsinline></video></div>
+      <div class="shot"><h3>Swapped out <span class="tag out">fullscreen this for OBS</span></h3><video id="remote" autoplay playsinline></video>
+      <div class="row" style="margin-top:8px"><button id="soloOut">Clean face-only view for OBS</button></div>
+      <div class="row" style="margin-top:8px"><button id="pipRemote" class="secondary">Pop-out floating window</button></div></div>
+    </div>
+    <div id="status">Idle. Pick a face photo, then press Start.</div>
+  </main>
+</div>
+<script>
+const $ = (id) => document.getElementById(id);
+const statusEl = $("status"), dot = $("liveDot"), liveText = $("liveText");
+const setLive = (on, txt) => { dot.classList.toggle("on", on); liveText.textContent = txt; };
+const log = (m) => { statusEl.textContent = m; };
+
+let pc = null, ws = null, localStream = null;
+
+$("reference").onchange = () => {
+  const f = $("reference").files[0];
+  if (!f) return;
+  $("refName").textContent = f.name;
+  const img = $("refImg");
+  img.src = URL.createObjectURL(f);
+  img.style.display = "block";
+};
+
+function backendToWs(url) {
+  const u = new URL(url);
+  u.protocol = u.protocol === "https:" ? "wss:" : "ws:";
+  return u.toString().replace(/\/$/, "") + "/v1/live";
+}
+async function fileToBase64(file) {
+  // Shrink to a bounded JPEG first (same rule as the Android app):
+  // raw photos are 3-8 MB and the server caps uploads at ~2 MB,
+  // which is why big picks got stuck with no reply.
+  const bitmap = await createImageBitmap(file);
+  const cap = 1024;
+  const scale = Math.min(1, cap / Math.max(bitmap.width, bitmap.height));
+  const w = Math.max(32, Math.round(bitmap.width * scale));
+  const h = Math.max(32, Math.round(bitmap.height * scale));
+  const canvas = document.createElement("canvas");
+  canvas.width = w; canvas.height = h;
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(bitmap, 0, 0, w, h);
+  bitmap.close();
+  const blob = await new Promise((res) => canvas.toBlob(res, "image/jpeg", 0.85));
+  if (!blob) throw new Error("photo convert failed");
+  const buf = await blob.arrayBuffer();
+  const bytes = new Uint8Array(buf);
+  const CHUNK = 8192;
+  let bin = "";
+  for (let i = 0; i < bytes.length; i += CHUNK) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+  return { b64: btoa(bin), bytes: bytes.length, width: w, height: h };
+}
+async function fetchIce(backend) {
+  // Same relay servers the Android app uses (public demo credentials,
+  // also the backend defaults). The cloud API does not send CORS headers,
+  // so a browser page often cannot read /v1/ice at all: without these the
+  // browser finds no network path and the right video stays blank.
+  const bakedIn = [
+    { urls: ["stun:stun.relay.metered.ca:80"] },
+    { urls: ["turn:global.relay.metered.ca:80"], username: "ae3c22bd148853255a70cb99", credential: "BFMymojsZRgOwHdo" },
+    { urls: ["turn:global.relay.metered.ca:80?transport=tcp"], username: "ae3c22bd148853255a70cb99", credential: "BFMymojsZRgOwHdo" },
+    { urls: ["turn:global.relay.metered.ca:443"], username: "ae3c22bd148853255a70cb99", credential: "BFMymojsZRgOwHdo" },
+    { urls: ["turns:global.relay.metered.ca:443?transport=tcp"], username: "ae3c22bd148853255a70cb99", credential: "BFMymojsZRgOwHdo" },
+    // Free public fallback relay (OpenRelay). Extra options only help:
+    // the browser races all of them and uses whichever answers first.
+    { urls: ["turn:openrelay.metered.ca:80"], username: "openrelay", credential: "openrelay" },
+    { urls: ["turn:openrelay.metered.ca:443"], username: "openrelay", credential: "openrelay" },
+    { urls: ["turn:openrelay.metered.ca:443?transport=tcp"], username: "openrelay", credential: "openrelay" },
+  ];
+  try {
+    const r = await fetch(backend.replace(/\/$/, "") + "/v1/ice");
+    if (!r.ok) return bakedIn;
+    const cfg = await r.json();
+    const live = (cfg.servers || []).map((s) => ({ urls: s.urls, username: s.username || undefined, credential: s.credential || undefined }));
+    return live.length ? live : bakedIn;
+  } catch { return bakedIn; }
+}
+
+$("start").onclick = async () => {
+  const backend = $("backend").value.trim();
+  const profile = $("profile").value;
+  setLive(false, "camera...");
+  log("Opening camera...");
+  try {
+    localStream = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
+    $("local").srcObject = localStream;
+  } catch (e) { log("Camera blocked: " + e); setLive(false, "idle"); return; }
+
+  setLive(false, "connecting...");
+  log("Connecting to " + backend + " ...");
+  const iceServers = await fetchIce(backend);
+  pc = new RTCPeerConnection(iceServers.length ? { iceServers } : undefined);
+  localStream.getTracks().forEach((t) => pc.addTrack(t, localStream));
+  pc.oniceconnectionstatechange = () => log("Network state: " + pc.iceConnectionState + " (want 'connected' within ~10s)");
+  pc.onconnectionstatechange = () => { if (pc.connectionState === "failed") log("Connection FAILED. Your network blocks video traffic (UDP/TURN). Try another network or phone hotspot, then Stop and Start again."); };
+  let gotTrack = false;
+  pc.ontrack = (ev) => { gotTrack = true; $("remote").srcObject = ev.streams[0]; setLive(true, "LIVE"); };
+  $("remote").onplaying = () => log("LIVE: swapped video is showing. Fullscreen the right video for OBS.");
+  setTimeout(() => { if (ws && !gotTrack) log("Still no video after 15s. Network state is " + (pc ? pc.iceConnectionState : "?") + ". If it says 'checking/failed', your network blocks video (try phone hotspot). If 'connected' but black, tell me and I will dig deeper."); }, 15000);
+
+  const offer = await pc.createOffer({ offerToReceiveVideo: true });
+  await pc.setLocalDescription(offer);
+
+  ws = new WebSocket(backendToWs(backend));
+  // One-shot dialling like the Android app: the cloud has no trickle-ICE
+  // channel, so the offer must already contain our network candidates.
+  // Sending it early (before gathering finishes) means the cloud has no
+  // path back to this browser: local camera shows, swapped video never does.
+  const iceCandidates = [];
+  let offerSent = false;
+  const sendOffer = () => {
+    if (offerSent || ws.readyState !== WebSocket.OPEN) return;
+    offerSent = true;
+    let sdp = pc.localDescription.sdp;
+    for (const c of iceCandidates) sdp += "a=" + c.candidate + "\r\n";
+    const relay = iceCandidates.filter((c) => (c.candidate || "").includes("typ relay")).length;
+    const host = iceCandidates.filter((c) => (c.candidate || "").includes("typ host")).length;
+    const srflx = iceCandidates.filter((c) => (c.candidate || "").includes("typ srflx")).length;
+    log("Dialling: " + iceCandidates.length + " paths (direct " + host + ", internet " + srflx + ", relay " + relay + ")...");
+    ws.send(JSON.stringify({ action: "start", profile, effect: "face_swap", sdp, type: pc.localDescription.type }));
+  };
+  pc.onicecandidate = (ev) => { if (ev.candidate) iceCandidates.push(ev.candidate); else sendOffer(); };
+  ws.onopen = () => setTimeout(sendOffer, 7000); // fallback: dial with partial paths like Android does
+  ws.onmessage = async (msg) => {
+    let data;
+    try { data = JSON.parse(msg.data); } catch { return; }
+    if (data.event === "answer") {
+      await pc.setRemoteDescription({ type: data.type, sdp: data.sdp });
+      log("Connected. Shrinking photo and sending...");
+      const f = $("reference").files[0];
+      if (f) {
+        try {
+          const pic = await fileToBase64(f);
+          log("Sending photo (" + Math.round(pic.bytes / 1024) + " KB, " + pic.width + "x" + pic.height + ")...");
+          ws.send(JSON.stringify({ action: "reference_image", mime_type: "image/jpeg", data_base64: pic.b64 }));
+        } catch (e) { log("Connected, but photo failed: " + e); }
+      } else {
+        log("Connected, but no photo picked: you will see your real face. Stop and restart with a photo.");
+      }
+      $("stop").disabled = false; $("start").disabled = true;
+    } else if (data.event === "reference_image" && data.status === "ready") {
+      log("LIVE: identity ready. Fullscreen the right video, capture it in OBS, pick OBS Virtual Camera in Zoom/Meet.");
+    } else if (data.event === "reference_image" && data.status === "error") {
+      log("Photo rejected: " + (data.detail || "unknown") + ". Use a clear front photo and restart.");
+    } else if (data.event === "error") {
+      log("Server: " + (data.detail || "unknown error"));
+    }
+  };
+  ws.onerror = () => log("Connection error. Check the backend URL and internet.");
+  ws.onclose = () => { if ($("start").disabled) { setLive(false, "closed"); } };
+};
+
+$("stop").onclick = () => {
+  try { if (document.fullscreenElement) document.exitFullscreen(); } catch {}
+  try { ws && ws.send(JSON.stringify({ action: "stop" })); } catch {}
+  try { ws && ws.close(); } catch {}
+  try { pc && pc.close(); } catch {}
+  try { localStream && localStream.getTracks().forEach((t) => t.stop()); } catch {}
+  pc = ws = localStream = null;
+  $("remote").srcObject = null; $("local").srcObject = null;
+  $("stop").disabled = true; $("start").disabled = false;
+  setLive(false, "idle");
+  log("Stopped.");
+};
+
+$("fullRemote").onclick = async () => {
+  const v = $("remote");
+  try {
+    if (v.requestFullscreen) await v.requestFullscreen();
+    else if (v.webkitEnterFullscreen) v.webkitEnterFullscreen();
+  } catch (e) { log("Fullscreen blocked: " + e); }
+};
+
+$("pipRemote").onclick = async () => {
+  const v = $("remote");
+  if (!v.srcObject) { log("Start the swap first, then pop out."); return; }
+  try {
+    if (document.pictureInPictureElement) await document.exitPictureInPicture();
+    else await v.requestPictureInPicture();
+  } catch (e) { log("Pop-out blocked by browser: " + e); }
+};
+
+$("soloOut").onclick = () => {
+  document.body.classList.add("solo");
+  log("Face-only view ON. OBS can now only see the face. Use the top-right button to exit.");
+};
+
+$("exitSolo").onclick = () => document.body.classList.remove("solo");
+</script>
+</body>
+</html>

@@ -75,12 +75,12 @@ _ARCFACE_128 = np.array(
     dtype=np.float32,
 )
 
-# Freeze instead of leaking the real face: extrapolation rides fast motion
-# for a few frames so the swap follows your head instead of flashing your
-# real face; a longer loss still clears so no stale swap ever floats around.
-STILL_FREEZE_SECONDS = 0.5
+# Freeze instead of leaking the real face: brief hold covers blinks only.
+# Extrapolation carries fast motion for a couple frames, then clears fast
+# so the swap follows you instead of floating stuck when you move.
+STILL_FREEZE_SECONDS = 0.35
 STILL_SPEED_PX = 25.0  # raised: nod-down / zoom shifts easily exceed 12 px/frame
-HOLD_FRAMES = 5
+HOLD_FRAMES = 2
 ROI_SCORE = 0.30
 # Acquisition accepts the low-threshold scan when keypoints exist (profile,
 # pitch-down, small/zoomed-out faces score low but align fine). Box-only
@@ -339,16 +339,8 @@ def paste_back(
     transform: np.ndarray,
     extra_masks: list[np.ndarray] | None = None,
     template: str = "arcface_112",
-    force_lower_face: bool = False,
 ) -> np.ndarray:
-    """Composite a swapped crop back into the full frame with seamless boundary blending.
-
-    When force_lower_face is True (beard-removal mode), the lower face
-    (mouth/chin/jaw) always pastes the swapped skin: occluder and model
-    masks, which often read beard hair as background, are overruled there
-    with a soft ramp so no hard edge appears. Upper-face masks (glasses,
-    hands over eyes) still apply.
-    """
+    """Composite a swapped crop back into the full frame with seamless boundary blending."""
     height, width = frame.shape[:2]
     size = int(swapped.shape[0])
     inverse = cv2.invertAffineTransform(transform)
@@ -392,22 +384,6 @@ def paste_back(
         # so hair/background never turns into flat mask color.
         core = _face_oval(size, template, grow=0.72) * 0.85
         alpha = np.maximum(alpha * 0.9, core * 0.85)
-    if force_lower_face:
-        # Beard-removal mode: overrule every mask over the lower face so
-        # beard hair can never poke through. In aligned-crop space the nose
-        # sits near 0.56 height and the mouth near 0.72: keep masks fully
-        # above 0.58, force swapped skin fully below 0.70, soft ramp between.
-        rows = np.arange(size, dtype=np.float32) / float(max(1, size))
-        ramp = np.clip((rows - 0.58) / max(1e-6, 0.70 - 0.58), 0.0, 1.0)
-        ramp = (ramp * ramp * (3.0 - 2.0 * ramp))[:, None]  # smoothstep edges
-        oval = _face_oval(size, template)
-        alpha = np.maximum(alpha, oval * ramp)
-    # Mask floor: xseg/model masks can mark the face itself occluded
-    # (glasses, beard, strong side light) and erase the whole swap, which
-    # flashes the real face. The landmark core always pastes; masks may
-    # only carve edge regions, never the face center.
-    core_floor = _face_oval(size, template, grow=0.6) * 0.85
-    alpha = np.maximum(alpha, core_floor)
     region_mask = cv2.warpAffine(
         alpha,
         local,
@@ -427,55 +403,6 @@ def paste_back(
     return output
 
 
-def _lab_face_stats(img: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Mean/std of LAB pixels inside the central face oval (hair-safe sampling)."""
-    lab = cv2.cvtColor(img, cv2.COLOR_RGB2LAB).astype(np.float32)
-    size = img.shape[0]
-    yy, xx = np.mgrid[0:size, 0:size].astype(np.float32)
-    cx, cy = size * 0.5, size * 0.50   # centered vertically: captures eyes + cheeks
-    rx, ry = size * 0.32, size * 0.44  # taller than before to include eye region
-    mask = (((xx - cx) / rx) ** 2 + ((yy - cy) / ry) ** 2) <= 1.0
-    pts = lab[mask]
-    return pts.mean(axis=0), pts.std(axis=0)
-
-
-def _apply_skin_transfer(
-    swapped: np.ndarray,
-    swapped_mean: np.ndarray,
-    swapped_std: np.ndarray,
-    target_mean: np.ndarray,
-    target_std: np.ndarray,
-    amount: float = 1.0,
-) -> np.ndarray:
-    """Chrominance-only Reinhard transfer with clamped luminance correction."""
-    swapped_lab = cv2.cvtColor(swapped, cv2.COLOR_RGB2LAB).astype(np.float32)
-    matched = swapped_lab.copy()
-
-    # L channel: gentle exposure correction only — clamp shift to ±12 LAB units.
-    l_shift = float(target_mean[0]) - float(swapped_mean[0])
-    l_shift = float(np.clip(l_shift, -12.0, 12.0))
-    matched[..., 0] = swapped_lab[..., 0] + l_shift
-
-    # a, b channels: full Reinhard transfer to fix colour cast / white balance
-    for c in (1, 2):
-        s_std = float(swapped_std[c]) + 1e-4
-        t_std = float(target_std[c]) + 1e-4
-        scale_ratio = float(np.clip(t_std / s_std, 0.65, 1.5))
-        matched[..., c] = (
-            (swapped_lab[..., c] - float(swapped_mean[c])) * scale_ratio
-            + float(target_mean[c])
-        )
-
-    matched_rgb = cv2.cvtColor(np.clip(matched, 0, 255).astype(np.uint8), cv2.COLOR_LAB2RGB)
-    if amount >= 0.99:
-        return matched_rgb
-    blended = (
-        swapped.astype(np.float32) * (1.0 - amount)
-        + matched_rgb.astype(np.float32) * amount
-    )
-    return np.clip(blended, 0, 255).astype(np.uint8)
-
-
 def _match_target_skin(
     swapped: np.ndarray,
     target_aligned: np.ndarray,
@@ -491,47 +418,53 @@ def _match_target_skin(
       the live room environment without altering perceived brightness.
     """
     try:
-        swapped_mean, swapped_std = _lab_face_stats(swapped)
-        target_mean, target_std = _lab_face_stats(target_aligned)
-        return _apply_skin_transfer(
-            swapped, swapped_mean, swapped_std, target_mean, target_std, amount
+        swapped_lab = cv2.cvtColor(swapped, cv2.COLOR_RGB2LAB).astype(np.float32)
+        target_lab = cv2.cvtColor(target_aligned, cv2.COLOR_RGB2LAB).astype(np.float32)
+        size = swapped.shape[0]
+
+        # Central face sampling mask to ignore hair and background borders
+        yy, xx = np.mgrid[0:size, 0:size].astype(np.float32)
+        cx, cy = size * 0.5, size * 0.50   # centered vertically: captures eyes + cheeks
+        rx, ry = size * 0.32, size * 0.44  # taller than before to include eye region
+        mask = (((xx - cx) / rx) ** 2 + ((yy - cy) / ry) ** 2) <= 1.0
+
+        swapped_pts = swapped_lab[mask]
+        target_pts = target_lab[mask]
+
+        swapped_mean = swapped_pts.mean(axis=0)
+        swapped_std = swapped_pts.std(axis=0)
+        target_mean = target_pts.mean(axis=0)
+        target_std = target_pts.std(axis=0)
+
+        matched = swapped_lab.copy()
+
+        # L channel: gentle exposure correction only — clamp shift to ±12 LAB units.
+        # This handles a studio-flash reference vs dim-room live face without
+        # darkening the swap when the user has darker skin than the reference.
+        l_shift = float(target_mean[0]) - float(swapped_mean[0])
+        l_shift = float(np.clip(l_shift, -12.0, 12.0))
+        matched[..., 0] = swapped_lab[..., 0] + l_shift
+
+        # a, b channels: full Reinhard transfer to fix colour cast / white balance
+        for c in (1, 2):
+            s_std = float(swapped_std[c]) + 1e-4
+            t_std = float(target_std[c]) + 1e-4
+            scale_ratio = float(np.clip(t_std / s_std, 0.65, 1.5))
+            matched[..., c] = (
+                (swapped_lab[..., c] - float(swapped_mean[c])) * scale_ratio
+                + float(target_mean[c])
+            )
+
+        matched_rgb = cv2.cvtColor(np.clip(matched, 0, 255).astype(np.uint8), cv2.COLOR_LAB2RGB)
+        if amount >= 0.99:
+            return matched_rgb
+        blended = (
+            swapped.astype(np.float32) * (1.0 - amount)
+            + matched_rgb.astype(np.float32) * amount
         )
+        return np.clip(blended, 0, 255).astype(np.uint8)
     except Exception as exc:
         logger.warning("target skin match skipped: %s", exc)
-        return swapped
-
-
-def _match_target_skin_steady(
-    swapped: np.ndarray,
-    target_aligned: np.ndarray,
-    context,
-    amount: float = 1.0,
-    adapt: float = 0.35,
-) -> np.ndarray:
-    """Skin transfer with temporally smoothed room-light stats.
-
-    Per-frame target stats breathe with detector jitter and auto-exposure,
-    which reads as tone flicker. A running average of the room stats keeps
-    the hue steady while still following real lighting changes within a few
-    frames. The swapped crop's own stats stay per-frame (identity detail).
-    """
-    try:
-        swapped_mean, swapped_std = _lab_face_stats(swapped)
-        fresh_mean, fresh_std = _lab_face_stats(target_aligned)
-        prev_mean = getattr(context, "skin_mean", None)
-        prev_std = getattr(context, "skin_std", None)
-        if prev_mean is None or prev_std is None or prev_mean.shape != fresh_mean.shape:
-            smooth_mean, smooth_std = fresh_mean, fresh_std
-        else:
-            smooth_mean = (adapt * fresh_mean + (1.0 - adapt) * prev_mean).astype(np.float32)
-            smooth_std = (adapt * fresh_std + (1.0 - adapt) * prev_std).astype(np.float32)
-        context.skin_mean = smooth_mean
-        context.skin_std = smooth_std
-        return _apply_skin_transfer(
-            swapped, swapped_mean, swapped_std, smooth_mean, smooth_std, amount
-        )
-    except Exception as exc:
-        logger.warning("steady skin match skipped: %s", exc)
         return swapped
 
 
@@ -649,11 +582,6 @@ class SwapStream:
     cached_masks: list[np.ndarray] = field(default_factory=list)
     cached_at: float = 0.0
     cached_mouth_open: float = 0.0
-    mouth_open_state: bool = False  # hysteresis state (open vs closed)
-    mouth_confirm: int = 0  # consistent-frame counter for state flips
-    skin_mean: np.ndarray | None = None  # smoothed room-light stats (anti-flicker)
-    skin_std: np.ndarray | None = None
-    last_pose_matrix: np.ndarray | None = None  # deadzone reference (anti-shimmer)
     frozen: np.ndarray | None = None
     frozen_at: float = 0.0
     last_seen: float = field(default_factory=time.perf_counter)
@@ -728,10 +656,6 @@ class FaceSwapEngine:
     @property
     def occluder_enabled(self) -> bool:
         return bool(settings.xseg_enabled) and self.occluder.configured_file_exists
-
-    @property
-    def beard_removal_enabled(self) -> bool:
-        return bool(settings.beard_removal)
 
     def _emap_matrix(self) -> np.ndarray | None:
         if self._emap is not None:
@@ -1026,21 +950,7 @@ class FaceSwapEngine:
         s_ty = context.pose_euro[1](ty, timestamp)
         s_scale = context.pose_euro[2](scale, timestamp)
         s_angle = context.pose_euro[3](angle, timestamp)
-        # Sub-pixel deadzone: detector noise below ~0.3 px would otherwise
-        # re-seat the paste every frame (shimmer). Hold the last matrix.
-        last = context.last_pose_matrix
-        if last is not None and last.shape == (2, 3):
-            ltx, lty, lscale, langle = _decompose_similarity(last)
-            if (
-                abs(s_tx - ltx) < 0.3
-                and abs(s_ty - lty) < 0.3
-                and abs(s_scale - lscale) / max(lscale, 1e-6) < 0.002
-                and abs(s_angle - langle) < 0.001
-            ):
-                return last
-        composed = _recompose_similarity(s_tx, s_ty, s_scale, s_angle)
-        context.last_pose_matrix = composed
-        return composed
+        return _recompose_similarity(s_tx, s_ty, s_scale, s_angle)
 
     def _track(self, rgb: np.ndarray, context: SwapStream, now: float) -> bool:
         """Fast ROI re-detection when tracking, with full-frame fallback scanner.
@@ -1234,29 +1144,12 @@ class FaceSwapEngine:
         if not tracked or context.kps is None:
             return self._no_face(rgb, context, width, height, now)
 
-        # Mouth dynamics with hysteresis + confirmation: a single threshold
-        # oscillates when the sensor sits on the boundary (open, closed,
-        # open...), retriggering inference every frame — that churn was the
-        # mouth jitter. Opens at 0.12, closes at 0.08, and a flip needs two
-        # consistent frames so one noisy detection cannot flap the state.
+        # Mouth dynamics check: force neural inference on speech / phoneme transitions.
+        # 0.10 threshold: any visible open makes a fresh face at once, so the
+        # cached closed mouth never stretches over an open mouth.
         mouth_open = float(np.linalg.norm(context.kps[4] - context.kps[3]))
         mouth_delta = abs(mouth_open - context.cached_mouth_open) / max(mouth_open, 1e-4)
-        force_mouth_inference = False
-        if not context.mouth_open_state and mouth_delta > 0.12:
-            context.mouth_confirm += 1
-            if context.mouth_confirm >= 2:
-                context.mouth_open_state = True
-                context.mouth_confirm = 0
-                force_mouth_inference = True
-        elif context.mouth_open_state and mouth_delta < 0.08:
-            context.mouth_confirm += 1
-            if context.mouth_confirm >= 2:
-                context.mouth_open_state = False
-                context.mouth_confirm = 0
-        else:
-            context.mouth_confirm = 0
-        if context.mouth_open_state and mouth_delta > 0.12:
-            force_mouth_inference = True
+        force_mouth_inference = mouth_delta > 0.10
 
         if not budget.should_infer(now) and not force_mouth_inference:
             dropped_inference_counter.increment()
@@ -1276,30 +1169,14 @@ class FaceSwapEngine:
             if swapped is None:
                 raise RuntimeError("swapper produced no face")
             # Pro lighting rule: match the LIVE room light (chrominance-only,
-            # luminance clamped) with temporally smoothed room stats so the
-            # tone cannot breathe frame to frame. The reference identity
-            # stays in the swapper output itself; only the light color is
-            # borrowed from the current frame.
+            # luminance clamped) so the swap never looks like flat mask paint.
+            # The reference identity stays in the swapper output itself; only
+            # the light color is borrowed from the current frame.
             try:
-                swapped = _match_target_skin_steady(swapped, aligned, context, amount=1.0)
+                swapped = _match_target_skin(swapped, aligned, amount=1.0)
             except Exception as exc:
                 logger.debug("live skin match skipped: %s", exc)
             swapped = self._enhance(swapped, size)
-
-            # Paint EMA in canonical space: the fresh and previous crops are
-            # both aligned to the same template, so blending kills texture
-            # shimmer without smearing position. The mouth band always takes
-            # the fresh paint so teeth never ghost.
-            prev = context.cached_crop
-            if prev is not None and prev.shape == swapped.shape:
-                rows = np.arange(size, dtype=np.float32) / float(max(1, size))
-                mouth_row = np.clip((rows - 0.66) / 0.06, 0.0, 1.0)[:, None, None]
-                weight = (0.6 + 0.4 * mouth_row).astype(np.float32)
-                blended = (
-                    swapped.astype(np.float32) * weight
-                    + prev.astype(np.float32) * (1.0 - weight)
-                )
-                swapped = np.clip(blended, 0, 255).astype(np.uint8)
 
             neural_ms = (time.perf_counter() - started) * 1000.0
             model_window.add(neural_ms)
@@ -1316,14 +1193,7 @@ class FaceSwapEngine:
         if occlusion is not None:
             masks.append(occlusion)
         try:
-            output = paste_back(
-                rgb,
-                swapped,
-                smooth_transform,
-                masks or None,
-                template,
-                self.beard_removal_enabled,
-            )
+            output = paste_back(rgb, swapped, smooth_transform, masks or None, template)
         except cv2.error as exc:
             inference_error_counter.increment()
             logger.warning("face-swap paste-back failed: %s", exc)
@@ -1356,12 +1226,7 @@ class FaceSwapEngine:
         smooth_current = self._filter_transform(context, current, now)
         try:
             return paste_back(
-                rgb,
-                context.cached_crop,
-                smooth_current,
-                context.cached_masks or None,
-                template,
-                self.beard_removal_enabled,
+                rgb, context.cached_crop, smooth_current, context.cached_masks or None, template
             )
         except cv2.error:
             return rgb
@@ -1406,12 +1271,7 @@ class FaceSwapEngine:
                 cache_reuse_counter.increment()
                 try:
                     return paste_back(
-                        rgb,
-                        context.cached_crop,
-                        current,
-                        context.cached_masks or None,
-                        template,
-                        self.beard_removal_enabled,
+                        rgb, context.cached_crop, current, context.cached_masks or None, template
                     )
                 except cv2.error:
                     pass
@@ -1423,15 +1283,6 @@ class FaceSwapEngine:
             and context.last_speed <= STILL_SPEED_PX
         ):
             cache_reuse_counter.increment()
-            return context.frozen
-
-        # Fail-closed output rule: once a swapped frame exists, a lost face
-        # must NEVER reveal the real face. Repeat the last complete frame
-        # while tracking recovers — a frozen moment beats an identity flash.
-        # Tracking still resets so the next frame re-acquires via full scan.
-        if context.frozen is not None:
-            cache_reuse_counter.increment()
-            context.reset_tracking()
             return context.frozen
 
         raw_leak_counter.increment()
@@ -1455,7 +1306,6 @@ class FaceSwapEngine:
             "enhancer_enabled": self.enhancer_enabled,
             "occluder_model": self.occluder.status(),
             "occluder_enabled": self.occluder_enabled,
-            "beard_removal_enabled": self.beard_removal_enabled,
             "detector_backend": self.detector.name,
             "emap_loaded": self._emap is not None,
             "cached_identities": len(self._sources),

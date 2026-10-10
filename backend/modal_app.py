@@ -39,7 +39,7 @@ app=modal.App("omnilive")
 
 @app.function(
     image=image,
-    gpu="A10G",
+    gpu="L4",
     volumes={MODEL_ROOT:model_volume},
     secrets=[runtime_secret],
     env={
@@ -49,7 +49,6 @@ app=modal.App("omnilive")
         "OMNILIVE_SWAPPER_ENGINE": "hyper1c",
         "OMNILIVE_ENHANCER_ENABLED": "false",
         "OMNILIVE_XSEG_ENABLED": "true",
-        "OMNILIVE_BEARD_REMOVAL": "false",
         "OMNILIVE_ICE_URLS": (
             "stun:stun.relay.metered.ca:80,"
             "turn:global.relay.metered.ca:80,"

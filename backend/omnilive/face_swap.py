@@ -402,6 +402,12 @@ def paste_back(
         ramp = (ramp * ramp * (3.0 - 2.0 * ramp))[:, None]  # smoothstep edges
         oval = _face_oval(size, template)
         alpha = np.maximum(alpha, oval * ramp)
+    # Mask floor: xseg/model masks can mark the face itself occluded
+    # (glasses, beard, strong side light) and erase the whole swap, which
+    # flashes the real face. The landmark core always pastes; masks may
+    # only carve edge regions, never the face center.
+    core_floor = _face_oval(size, template, grow=0.6) * 0.85
+    alpha = np.maximum(alpha, core_floor)
     region_mask = cv2.warpAffine(
         alpha,
         local,
@@ -1417,6 +1423,15 @@ class FaceSwapEngine:
             and context.last_speed <= STILL_SPEED_PX
         ):
             cache_reuse_counter.increment()
+            return context.frozen
+
+        # Fail-closed output rule: once a swapped frame exists, a lost face
+        # must NEVER reveal the real face. Repeat the last complete frame
+        # while tracking recovers — a frozen moment beats an identity flash.
+        # Tracking still resets so the next frame re-acquires via full scan.
+        if context.frozen is not None:
+            cache_reuse_counter.increment()
+            context.reset_tracking()
             return context.frozen
 
         raw_leak_counter.increment()

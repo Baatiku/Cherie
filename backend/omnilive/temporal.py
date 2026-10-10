@@ -14,7 +14,11 @@ class PipelineProfile:
 
 PROFILE_DEFAULTS = {
     "low_latency": PipelineProfile(10.0, 12, 256, 220),
-    "balanced": PipelineProfile(14.0, 8, 384, 180),
+    # Balanced runs deliberately below what fast GPUs allow: repainting at
+    # most ~10x/sec and reusing the stable paint between is what hides
+    # per-frame detector/swap noise. Faster hardware must NOT mean fresher
+    # frames — freshness is flicker. Mouth opens still force fresh paint.
+    "balanced": PipelineProfile(10.0, 8, 384, 260),
     "high": PipelineProfile(18.0, 6, 448, 160),
 }
 

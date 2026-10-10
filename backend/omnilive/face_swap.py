@@ -643,8 +643,11 @@ class SwapStream:
     cached_masks: list[np.ndarray] = field(default_factory=list)
     cached_at: float = 0.0
     cached_mouth_open: float = 0.0
+    mouth_open_state: bool = False  # hysteresis state (open vs closed)
+    mouth_confirm: int = 0  # consistent-frame counter for state flips
     skin_mean: np.ndarray | None = None  # smoothed room-light stats (anti-flicker)
     skin_std: np.ndarray | None = None
+    last_pose_matrix: np.ndarray | None = None  # deadzone reference (anti-shimmer)
     frozen: np.ndarray | None = None
     frozen_at: float = 0.0
     last_seen: float = field(default_factory=time.perf_counter)
@@ -1017,7 +1020,21 @@ class FaceSwapEngine:
         s_ty = context.pose_euro[1](ty, timestamp)
         s_scale = context.pose_euro[2](scale, timestamp)
         s_angle = context.pose_euro[3](angle, timestamp)
-        return _recompose_similarity(s_tx, s_ty, s_scale, s_angle)
+        # Sub-pixel deadzone: detector noise below ~0.3 px would otherwise
+        # re-seat the paste every frame (shimmer). Hold the last matrix.
+        last = context.last_pose_matrix
+        if last is not None and last.shape == (2, 3):
+            ltx, lty, lscale, langle = _decompose_similarity(last)
+            if (
+                abs(s_tx - ltx) < 0.3
+                and abs(s_ty - lty) < 0.3
+                and abs(s_scale - lscale) / max(lscale, 1e-6) < 0.002
+                and abs(s_angle - langle) < 0.001
+            ):
+                return last
+        composed = _recompose_similarity(s_tx, s_ty, s_scale, s_angle)
+        context.last_pose_matrix = composed
+        return composed
 
     def _track(self, rgb: np.ndarray, context: SwapStream, now: float) -> bool:
         """Fast ROI re-detection when tracking, with full-frame fallback scanner.
@@ -1211,13 +1228,29 @@ class FaceSwapEngine:
         if not tracked or context.kps is None:
             return self._no_face(rgb, context, width, height, now)
 
-        # Mouth dynamics check: force neural inference on speech / phoneme transitions.
-        # 0.14 threshold: clear opens refresh at once, while tiny tracking
-        # noise no longer retriggers inference every frame (that retrigger
-        # churn was the mouth jitter).
+        # Mouth dynamics with hysteresis + confirmation: a single threshold
+        # oscillates when the sensor sits on the boundary (open, closed,
+        # open...), retriggering inference every frame — that churn was the
+        # mouth jitter. Opens at 0.12, closes at 0.08, and a flip needs two
+        # consistent frames so one noisy detection cannot flap the state.
         mouth_open = float(np.linalg.norm(context.kps[4] - context.kps[3]))
         mouth_delta = abs(mouth_open - context.cached_mouth_open) / max(mouth_open, 1e-4)
-        force_mouth_inference = mouth_delta > 0.14
+        force_mouth_inference = False
+        if not context.mouth_open_state and mouth_delta > 0.12:
+            context.mouth_confirm += 1
+            if context.mouth_confirm >= 2:
+                context.mouth_open_state = True
+                context.mouth_confirm = 0
+                force_mouth_inference = True
+        elif context.mouth_open_state and mouth_delta < 0.08:
+            context.mouth_confirm += 1
+            if context.mouth_confirm >= 2:
+                context.mouth_open_state = False
+                context.mouth_confirm = 0
+        else:
+            context.mouth_confirm = 0
+        if context.mouth_open_state and mouth_delta > 0.12:
+            force_mouth_inference = True
 
         if not budget.should_infer(now) and not force_mouth_inference:
             dropped_inference_counter.increment()
@@ -1246,6 +1279,21 @@ class FaceSwapEngine:
             except Exception as exc:
                 logger.debug("live skin match skipped: %s", exc)
             swapped = self._enhance(swapped, size)
+
+            # Paint EMA in canonical space: the fresh and previous crops are
+            # both aligned to the same template, so blending kills texture
+            # shimmer without smearing position. The mouth band always takes
+            # the fresh paint so teeth never ghost.
+            prev = context.cached_crop
+            if prev is not None and prev.shape == swapped.shape:
+                rows = np.arange(size, dtype=np.float32) / float(max(1, size))
+                mouth_row = np.clip((rows - 0.66) / 0.06, 0.0, 1.0)[:, None, None]
+                weight = (0.6 + 0.4 * mouth_row).astype(np.float32)
+                blended = (
+                    swapped.astype(np.float32) * weight
+                    + prev.astype(np.float32) * (1.0 - weight)
+                )
+                swapped = np.clip(blended, 0, 255).astype(np.uint8)
 
             neural_ms = (time.perf_counter() - started) * 1000.0
             model_window.add(neural_ms)

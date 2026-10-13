@@ -15,3 +15,5 @@ artifacts/
 models/
 *.jks
 *.keystore
+scratch_*/
+

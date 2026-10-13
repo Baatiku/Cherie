@@ -79,8 +79,8 @@ _ARCFACE_128 = np.array(
 # Extrapolation carries fast motion for a couple frames, then clears fast
 # so the swap follows you instead of floating stuck when you move.
 STILL_FREEZE_SECONDS = 0.35
-STILL_SPEED_PX = 25.0  # raised: nod-down / zoom shifts easily exceed 12 px/frame
-HOLD_FRAMES = 2
+STILL_SPEED_PX = 40.0
+HOLD_FRAMES = 8
 ROI_SCORE = 0.30
 # Acquisition accepts the low-threshold scan when keypoints exist (profile,
 # pitch-down, small/zoomed-out faces score low but align fine). Box-only
@@ -150,7 +150,7 @@ def _template_points(name: str, size: int) -> np.ndarray:
 
 
 def _similarity(src5: np.ndarray, dst5: np.ndarray) -> np.ndarray | None:
-    """Exact least-squares similarity transform with 3D-yaw aspect stabilization."""
+    """Exact least-squares similarity transform (Umeyama algorithm)."""
     src = np.asarray(src5, dtype=np.float64).reshape(5, 2)
     dst = np.asarray(dst5, dtype=np.float64).reshape(5, 2)
     mu_src = src.mean(axis=0)
@@ -169,35 +169,6 @@ def _similarity(src5: np.ndarray, dst5: np.ndarray) -> np.ndarray | None:
     scale = float(((singular * np.diag(reflect)).sum()) / variance)
     if not np.isfinite(scale) or scale <= 0:
         return None
-
-    # Yaw robustness: in out-of-plane head turns (yaw), horizontal inter-ocular
-    # distance contracts by cos(yaw), causing standard Umeyama scale to artificially
-    # shrink and squash the face. Use the vertical axis (eye midpoint -> mouth midpoint)
-    # as an invariant baseline under yaw.
-    src_eye_mid = (src[0] + src[1]) * 0.5
-    src_mouth_mid = (src[3] + src[4]) * 0.5
-    src_vert = float(np.linalg.norm(src_mouth_mid - src_eye_mid))
-
-    dst_eye_mid = (dst[0] + dst[1]) * 0.5
-    dst_mouth_mid = (dst[3] + dst[4]) * 0.5
-    dst_vert = float(np.linalg.norm(dst_mouth_mid - dst_eye_mid))
-
-    if src_vert > 1e-4 and dst_vert > 1e-4:
-        vert_scale = dst_vert / src_vert
-        src_eye_dist = float(np.linalg.norm(src[1] - src[0]))
-        dst_eye_dist = float(np.linalg.norm(dst[1] - dst[0]))
-        canonical_ratio = dst_eye_dist / dst_vert
-        current_ratio = src_eye_dist / src_vert
-        # If horizontal distance foreshortened significantly relative to vertical (yaw > 30 deg)
-        if current_ratio < 0.75 * canonical_ratio:
-            scale = max(scale, vert_scale * 0.88)
-        # Pitch robustness (nod down/up): vertical eye->mouth compresses while
-        # eye distance stays. Fall back to the horizontal baseline so the
-        # crop does not collapse and drop the face on a nod.
-        elif current_ratio > 1.35 * canonical_ratio and src_eye_dist > 1e-4:
-            horiz_scale = dst_eye_dist / src_eye_dist
-            scale = max(scale, horiz_scale * 0.88)
-
     translation = mu_dst - scale * (rotation @ mu_src)
     matrix = np.hstack([scale * rotation, translation.reshape(2, 1)])
     return matrix.astype(np.float32)
@@ -366,24 +337,16 @@ def paste_back(
         borderMode=cv2.BORDER_REPLICATE,
     )
     alpha = _face_oval(size, template)
-    has_model_mask = False
     if extra_masks:
         for extra in extra_masks:
             if extra.shape[:2] != (size, size):
                 extra = cv2.resize(extra, (size, size), interpolation=cv2.INTER_LINEAR)
             extra_f = np.clip(extra.astype(np.float32), 0.0, 1.0)
-            # Ignore degenerate masks (all 0 / all 1): they carry no face
-            # shape info and would either erase the swap or force it flat.
-            if extra_f.mean() < 0.005 or extra_f.mean() > 0.995:
+            # Ignore degenerate all-zero masks that would erase the swap completely
+            if extra_f.mean() < 0.005:
                 continue
-            has_model_mask = True
             alpha = alpha * extra_f
-    if not has_model_mask:
-        # No model/occluder guidance (e.g. inswapper with xseg off): keep a
-        # soft face core so the swap holds together, but at reduced strength
-        # so hair/background never turns into flat mask color.
-        core = _face_oval(size, template, grow=0.72) * 0.85
-        alpha = np.maximum(alpha * 0.9, core * 0.85)
+
     region_mask = cv2.warpAffine(
         alpha,
         local,
@@ -572,7 +535,6 @@ class SwapStream:
     box: Region | None = None
     kps: np.ndarray | None = None
     euro: list[_OneEuro] = field(default_factory=list)
-    pose_euro: list[_OneEuro] = field(default_factory=list)
     frame_index: int = 0
     prev_centroid: np.ndarray | None = None
     velocity: np.ndarray = field(default_factory=lambda: np.zeros(2, dtype=np.float32))
@@ -582,6 +544,9 @@ class SwapStream:
     cached_masks: list[np.ndarray] = field(default_factory=list)
     cached_at: float = 0.0
     cached_mouth_open: float = 0.0
+    baseline_v_jaw: float | None = None
+    cached_v_jaw: float = 0.0
+    cached_live_mouth: np.ndarray | None = None
     frozen: np.ndarray | None = None
     frozen_at: float = 0.0
     last_seen: float = field(default_factory=time.perf_counter)
@@ -604,11 +569,16 @@ class SwapStream:
         self.kps = None
         self.raw_kps = None
         self.euro = []
-        self.pose_euro = []
         self.prev_centroid = None
         self.velocity = np.zeros(2, dtype=np.float32)
         self.last_speed = 0.0
         self.missed_frames = 0
+        self.cached_crop = None
+        self.cached_masks = []
+        self.cached_at = 0.0
+        self.baseline_v_jaw = None
+        self.cached_v_jaw = 0.0
+        self.cached_live_mouth = None
 
 
 class FaceSwapEngine:
@@ -625,7 +595,7 @@ class FaceSwapEngine:
             settings.face_detector_model,
             confidence=ROI_SCORE,
             nms_threshold=settings.face_detector_nms,
-            max_regions=1,
+            max_regions=5,
         )
         self.swapper_name = swapper_engine or settings.swapper_engine
         if self.swapper_name not in ENGINES:
@@ -898,145 +868,57 @@ class FaceSwapEngine:
     ) -> np.ndarray:
         flat = np.asarray(fresh, dtype=np.float32).reshape(-1)
         if len(context.euro) != flat.shape[0]:
-            context.euro = [_OneEuro(min_cutoff=1.0, beta=0.02) for _ in range(flat.shape[0])]
+            context.euro = [_OneEuro(freq=30.0, min_cutoff=1.2, beta=0.08) for _ in range(flat.shape[0])]
         smoothed = np.array([f(value, timestamp) for f, value in zip(context.euro, flat)])
         return smoothed.reshape(5, 2).astype(np.float32)
 
-    def _filter_transform(
-        self, context: SwapStream, matrix: np.ndarray, timestamp: float
-    ) -> np.ndarray:
-        """Filter rigid similarity parameters (translation, scale, rotation) to prevent scale breathing.
-
-        When the face is moving fast (context.last_speed > 10 px/frame) we bypass
-        the filter and return the raw matrix directly — the jitter is imperceptible
-        at that speed and the lag from a stiff filter causes the swap to slide behind
-        the real face. At moderate speed (>5 px/frame) we use higher beta values to
-        allow the filter to follow without over-smoothing.
-        """
-        speed = getattr(context, "last_speed", 0.0)
-
-        # Fast motion: skip filter entirely — raw matrix tracks head perfectly
-        if speed > 10.0:
-            # Still feed values into the filters so they warm up for when we re-engage
-            tx, ty, scale, angle = _decompose_similarity(matrix)
-            if len(context.pose_euro) == 4:
-                for f, v in zip(context.pose_euro, (tx, ty, scale, angle)):
-                    f(v, timestamp)  # warm up, discard output
-            return matrix
-
-        tx, ty, scale, angle = _decompose_similarity(matrix)
-        # Moderate motion: looser beta so the filter chases position quickly.
-        # Scale beta raised (was 0.005): zoom-out steps must be followed
-        # within a few frames or the swap visibly slides behind the face.
-        beta_tx = 0.08 if speed > 5.0 else 0.03
-        beta_scale = 0.05 if speed > 5.0 else 0.02
-        beta_angle = 0.04 if speed > 5.0 else 0.01
-
-        if len(context.pose_euro) != 4:
-            context.pose_euro = [
-                _OneEuro(min_cutoff=1.2, beta=beta_tx),    # tx
-                _OneEuro(min_cutoff=1.2, beta=beta_tx),    # ty
-                _OneEuro(min_cutoff=0.6, beta=beta_scale), # scale
-                _OneEuro(min_cutoff=0.8, beta=beta_angle), # angle
-            ]
-        else:
-            # Hot-swap beta on running filters — _OneEuro stores beta as self.beta
-            # but never reads it dynamically; mutating it is the only way to adapt.
-            context.pose_euro[0].beta = beta_tx
-            context.pose_euro[1].beta = beta_tx
-            context.pose_euro[2].beta = beta_scale
-            context.pose_euro[3].beta = beta_angle
-        s_tx = context.pose_euro[0](tx, timestamp)
-        s_ty = context.pose_euro[1](ty, timestamp)
-        s_scale = context.pose_euro[2](scale, timestamp)
-        s_angle = context.pose_euro[3](angle, timestamp)
-        return _recompose_similarity(s_tx, s_ty, s_scale, s_angle)
-
     def _track(self, rgb: np.ndarray, context: SwapStream, now: float) -> bool:
-        """Fast ROI re-detection when tracking, with full-frame fallback scanner.
-
-        Tracking within an expanded ROI drops detector time from ~14ms to ~2.5ms,
-        preserving the 30 fps budget. Full scan re-acquires instantly on track loss.
-        """
+        """Full-frame detector tracking with spatial continuity."""
         started = time.perf_counter()
         h, w = rgb.shape[:2]
-        found = []
-
-        def _with_box_kps(region: Region, dx: int = 0, dy: int = 0) -> Region:
-            # Box-fallback keypoints: pitch-down / profile faces often come
-            # back with a box but no 5-point kps. Estimate ArcFace-order
-            # points from box geometry so tracking never drops the face.
-            if region.kps is not None:
-                return region
-            bw = float(max(1, region.width))
-            bh = float(max(1, region.height))
-            pts = (
-                (region.x + bw * 0.35 + dx, region.y + bh * 0.40 + dy),
-                (region.x + bw * 0.65 + dx, region.y + bh * 0.40 + dy),
-                (region.x + bw * 0.50 + dx, region.y + bh * 0.55 + dy),
-                (region.x + bw * 0.38 + dx, region.y + bh * 0.75 + dy),
-                (region.x + bw * 0.62 + dx, region.y + bh * 0.75 + dy),
-            )
-            return Region(region.x + dx, region.y + dy, region.width, region.height, region.score * 0.9, pts)
-
-        # Fast ROI path: if already tracking, detect inside a padded sub-window.
-        # Generous pad (60% + extra vertical) keeps nod-down and zoom steps
-        # inside the window; small faces (zoom-out) are allowed down to 32px.
-        if context.box is not None and context.missed_frames == 0:
-            # Region uses x, y, width, height — compute corners from those fields
-            bx1, by1 = context.box.x, context.box.y
-            bx2, by2 = context.box.x + context.box.width, context.box.y + context.box.height
-            bw, bh = bx2 - bx1, by2 - by1
-            pad_x, pad_y = int(bw * 0.60), int(bh * 0.70)
-            rx1, ry1 = max(0, bx1 - pad_x), max(0, by1 - pad_y)
-            rx2, ry2 = min(w, bx2 + pad_x), min(h, by2 + pad_y)
-            if (rx2 - rx1) >= 32 and (ry2 - ry1) >= 32:
-                roi = rgb[ry1:ry2, rx1:rx2]
-                try:
-                    roi_found = list(self.scan_detector.detect(roi))
-                    if roi_found:
-                        roi_found = [_with_box_kps(r) for r in roi_found]
-                        best_roi = max(roi_found, key=lambda r: (r.score, r.area))
-                        if best_roi.score >= ROI_SCORE and best_roi.kps is not None:
-                            # Translate ROI-local coords back to full-frame coords.
-                            found = [
-                                Region(
-                                    best_roi.x + rx1,
-                                    best_roi.y + ry1,
-                                    best_roi.width,
-                                    best_roi.height,
-                                    best_roi.score,
-                                    tuple((p[0] + rx1, p[1] + ry1) for p in best_roi.kps),
-                                )
-                            ]
-                except Exception as exc:
-                    logger.debug("ROI detection skipped: %s", exc)
-
-        # Full scan fallback if ROI was not attempted or did not detect
-        if not found:
-            try:
-                scanned = list(self.scan_detector.detect(rgb))
-                found = [_with_box_kps(r) for r in scanned if r.kps is not None or True]
-                found = [r for r in found if r.kps is not None]
-            except Exception as exc:
-                logger.warning("swap tracking failed: %s", exc)
-                return False
+        try:
+            scanned = list(self.scan_detector.detect(rgb))
+            found = [r for r in scanned if r.kps is not None and r.score >= ROI_SCORE]
+        except Exception as exc:
+            logger.warning("swap tracking failed: %s", exc)
+            return False
 
         if not found:
             detector_window.add((time.perf_counter() - started) * 1000.0)
             return False
 
-        best = max(found, key=lambda r: (r.score, r.area))
-        # Small/zoomed-out faces are genuinely tiny — never drop them for size.
-        # Only guard against noise boxes below MIN_FACE_PX on acquisition.
-        if context.box is None:
-            has_real_kps = best.score >= ACQUIRE_KPS_SCORE
-            too_small = max(best.width, best.height) < MIN_FACE_PX
-            if not has_real_kps or too_small:
-                # One last chance: box-only hits need the strict threshold.
-                if best.score < settings.face_detector_confidence:
+        # When already tracking:
+        if context.prev_centroid is not None and context.box is not None:
+            def _dist_to_prev(r: Region) -> float:
+                r_pts = np.asarray(r.kps, dtype=np.float32).reshape(5, 2)
+                r_cent = r_pts.mean(axis=0)
+                return float(np.linalg.norm(r_cent - context.prev_centroid))
+
+            if len(found) == 1:
+                # Single face: definitely the user unless jumped across the entire screen
+                dist = _dist_to_prev(found[0])
+                if dist < float(max(w, h)) * 0.6:
+                    best = found[0]
+                else:
                     detector_window.add((time.perf_counter() - started) * 1000.0)
                     return False
+            else:
+                face_diag = float(math.hypot(context.box.width, context.box.height))
+                max_jump = max(120.0, face_diag * 1.5)
+                valid_near = [r for r in found if _dist_to_prev(r) <= max_jump]
+                if valid_near:
+                    best = min(valid_near, key=_dist_to_prev)
+                else:
+                    best = min(found, key=_dist_to_prev)
+                    if _dist_to_prev(best) > float(max(w, h)) * 0.5:
+                        detector_window.add((time.perf_counter() - started) * 1000.0)
+                        return False
+        else:
+            # Acquisition: require confident hit on the primary face
+            best = max(found, key=lambda r: (r.score, r.area))
+            if best.score < settings.face_detector_confidence or max(best.width, best.height) < MIN_FACE_PX:
+                detector_window.add((time.perf_counter() - started) * 1000.0)
+                return False
 
         context.box = best
         fresh = np.asarray(best.kps, dtype=np.float32).reshape(5, 2)
@@ -1044,12 +926,13 @@ class FaceSwapEngine:
         if context.prev_centroid is not None:
             disp = centroid - context.prev_centroid
             context.last_speed = float(np.linalg.norm(disp))
-            # Smooth velocity vector (EMA) for graceful trajectory extrapolation
-            context.velocity = 0.7 * disp.astype(np.float32) + 0.3 * context.velocity
+            if context.last_speed > 60.0:
+                context.velocity = np.zeros(2, dtype=np.float32)
+            else:
+                context.velocity = 0.4 * disp.astype(np.float32) + 0.6 * context.velocity
         context.prev_centroid = centroid.astype(np.float32)
         if context.kps is None:
             context.euro = []
-            context.pose_euro = []
         context.raw_kps = fresh.copy()   # save unfiltered for extrapolation in _no_face
         context.kps = self._filter_kps(context, fresh, now)
         context.missed_frames = 0
@@ -1144,23 +1027,62 @@ class FaceSwapEngine:
         if not tracked or context.kps is None:
             return self._no_face(rgb, context, width, height, now)
 
-        # Mouth dynamics check: force neural inference on speech / phoneme transitions.
-        # 0.10 threshold: any visible open makes a fresh face at once, so the
-        # cached closed mouth never stretches over an open mouth.
-        mouth_open = float(np.linalg.norm(context.kps[4] - context.kps[3]))
-        mouth_delta = abs(mouth_open - context.cached_mouth_open) / max(mouth_open, 1e-4)
-        force_mouth_inference = mouth_delta > 0.10
-
-        if not budget.should_infer(now) and not force_mouth_inference:
-            dropped_inference_counter.increment()
-            if context.cached_crop is None or not self._cache_valid(context, now):
-                return self._reuse_or_hold(rgb, context, width, height, now)
-            return self._paste_cached(rgb, context, width, height, now)
-
         aligned, transform = norm_crop(rgb, context.kps, size, template)
         if aligned is None or transform is None:
             return self._no_face(rgb, context, width, height, now)
-        smooth_transform = self._filter_transform(context, transform, now)
+
+        # Precise mouth dynamics and articulation detection:
+        # 1. Vertical jaw drop along the anatomical facial axis
+        kps = context.kps
+        eye_dist = float(np.linalg.norm(kps[1] - kps[0])) + 1e-6
+        mouth_center = (kps[3] + kps[4]) * 0.5
+        nose = kps[2]
+        eye_center = (kps[0] + kps[1]) * 0.5
+        face_v = mouth_center - eye_center
+        face_len = float(np.linalg.norm(face_v)) + 1e-6
+        face_axis = face_v / face_len
+        v_jaw = float(np.dot(mouth_center - nose, face_axis)) / eye_dist
+
+        if context.baseline_v_jaw is None:
+            context.baseline_v_jaw = v_jaw
+        else:
+            if v_jaw < context.baseline_v_jaw:
+                context.baseline_v_jaw = 0.90 * context.baseline_v_jaw + 0.10 * v_jaw
+            else:
+                context.baseline_v_jaw = 0.998 * context.baseline_v_jaw + 0.002 * v_jaw
+
+        jaw_drop = v_jaw - context.baseline_v_jaw
+        jaw_delta = abs(v_jaw - context.cached_v_jaw)
+
+        # 2. Canonical mouth patch appearance & teeth/oral cavity contrast
+        my0, my1 = int(round(size * 0.60)), int(round(size * 0.85))
+        mx0, mx1 = int(round(size * 0.28)), int(round(size * 0.72))
+        live_mouth = aligned[my0:my1, mx0:mx1]
+
+        mouth_diff = 0.0
+        if context.cached_live_mouth is not None and context.cached_live_mouth.shape == live_mouth.shape:
+            mouth_diff = float(
+                np.mean(np.abs(live_mouth.astype(np.float32) - context.cached_live_mouth.astype(np.float32)))
+            )
+
+        mouth_gray = cv2.cvtColor(live_mouth, cv2.COLOR_RGB2GRAY)
+        p5, p95 = float(np.percentile(mouth_gray, 5)), float(np.percentile(mouth_gray, 95))
+        mouth_contrast = p95 - p5
+        has_open_oral_features = mouth_contrast > 70.0 and (p95 > 165.0 or p5 < 45.0)
+
+        # Trigger immediate neural inference whenever mouth is opening, speaking, or articulated
+        force_mouth_inference = (
+            jaw_drop > 0.035
+            or jaw_delta > 0.020
+            or mouth_diff > 4.5
+            or has_open_oral_features
+        )
+
+        if not budget.should_infer(now) and not force_mouth_inference:
+            dropped_inference_counter.increment()
+            if context.cached_crop is not None and self._cache_valid(context, now):
+                return self._paste_cached(rgb, context, width, height, now)
+            # If cache is expired or not ready, proceed to fresh neural inference
 
         overload_before = budget.overload_events
         started = time.perf_counter()
@@ -1193,7 +1115,7 @@ class FaceSwapEngine:
         if occlusion is not None:
             masks.append(occlusion)
         try:
-            output = paste_back(rgb, swapped, smooth_transform, masks or None, template)
+            output = paste_back(rgb, swapped, transform, masks or None, template)
         except cv2.error as exc:
             inference_error_counter.increment()
             logger.warning("face-swap paste-back failed: %s", exc)
@@ -1201,7 +1123,8 @@ class FaceSwapEngine:
         context.cached_crop = swapped
         context.cached_masks = masks
         context.cached_at = now
-        context.cached_mouth_open = mouth_open
+        context.cached_v_jaw = v_jaw
+        context.cached_live_mouth = live_mouth.copy()
         context.frozen = output
         context.frozen_at = now
         pipeline_health.update(
@@ -1223,10 +1146,9 @@ class FaceSwapEngine:
         )
         if current is None:
             return rgb
-        smooth_current = self._filter_transform(context, current, now)
         try:
             return paste_back(
-                rgb, context.cached_crop, smooth_current, context.cached_masks or None, template
+                rgb, context.cached_crop, current, context.cached_masks or None, template
             )
         except cv2.error:
             return rgb
@@ -1251,19 +1173,14 @@ class FaceSwapEngine:
         size = int(self.spec["crop"])
         template = str(self.spec["template"])
 
-        # Motion hold for brief detector gaps (nod, zoom step, blink):
-        # extrapolate along velocity for a few frames so the swap rides the
-        # head instead of flashing the real face.
+        # Temporal hold for brief detector dropouts (e.g. blinks, quick turns):
+        # hold/extrapolate for up to HOLD_FRAMES frames (~260 ms) so the face never flashes off.
         if (
             context.cached_crop is not None
             and context.kps is not None
             and context.missed_frames <= HOLD_FRAMES
-            and context.last_speed <= STILL_SPEED_PX
-            and (now - context.cached_at) <= STILL_FREEZE_SECONDS
+            and (now - context.cached_at) <= 0.40
         ):
-            # Use raw (unfiltered) kps as extrapolation base: context.kps is One Euro
-            # smoothed, so extrapolating from it compounds the filter lag on top of the
-            # missed-frame offset. raw_kps is the direct SCRFD output — accurate position.
             base_kps = context.raw_kps if context.raw_kps is not None else context.kps
             extrapolated_kps = base_kps + context.velocity * float(context.missed_frames)
             current = _similarity(extrapolated_kps, _template_points(template, size))
@@ -1280,7 +1197,6 @@ class FaceSwapEngine:
         if (
             context.frozen is not None
             and (now - context.frozen_at) <= STILL_FREEZE_SECONDS
-            and context.last_speed <= STILL_SPEED_PX
         ):
             cache_reuse_counter.increment()
             return context.frozen

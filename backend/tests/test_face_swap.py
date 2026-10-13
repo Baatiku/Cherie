@@ -201,3 +201,63 @@ def test_paste_back_blending_without_core_override():
     # The occluded center (64+64 = 128) must preserve target frame pixels (near 50), not swapped (200)
     center_val = pasted[128, 128, 0]
     assert center_val < 100  # verified that occluder was NOT overridden by core
+
+
+def test_paste_back_opaque_face_interior():
+    """Face interior (mouth, eyes, nose) must be 100% opaque without 15% target bleed."""
+    frame = np.full((256, 256, 3), 30, dtype=np.uint8)     # dark background/target
+    swapped = np.full((128, 128, 3), 220, dtype=np.uint8)  # bright swapped face
+    # transform maps frame (256x256) -> crop (128x128): crop = frame - 64
+    transform = np.array([[1.0, 0.0, -64.0], [0.0, 1.0, -64.0]], dtype=np.float32)
+
+    pasted = paste_back(frame, swapped, transform, extra_masks=None, template="arcface_128")
+    assert pasted.shape == (256, 256, 3)
+
+    # In the center of the face (x=128, y=128), opacity must be 1.0 (pixel value == 220, not 220*0.85 + 30*0.15 = 191)
+    center_val = pasted[128, 128, 0]
+    assert center_val == 220, f"Expected 220 full opacity in face center, got {center_val}"
+
+    # In the mouth region (center x=128, mouth y=64 + 128*0.72 = 156), opacity must also be full 220
+    mouth_val = pasted[156, 128, 0]
+    assert mouth_val >= 215, f"Expected >=215 opacity in mouth center, got {mouth_val}"
+
+
+
+def test_vertical_jaw_drop_and_mouth_dynamics():
+    """Vertical jaw drop must trigger speech/mouth opening detection."""
+    from omnilive.face_swap import _ARCFACE_128, SwapStream
+
+    context = SwapStream(profile_name="balanced")
+    # Base neutral face landmarks
+    neutral_kps = (_ARCFACE_128 * 256.0).copy()
+
+    # Calculate v_jaw for neutral face
+    eye_dist = float(np.linalg.norm(neutral_kps[1] - neutral_kps[0])) + 1e-6
+    mouth_center = (neutral_kps[3] + neutral_kps[4]) * 0.5
+    nose = neutral_kps[2]
+    eye_center = (neutral_kps[0] + neutral_kps[1]) * 0.5
+    face_v = mouth_center - eye_center
+    face_axis = face_v / (float(np.linalg.norm(face_v)) + 1e-6)
+    v_jaw_neutral = float(np.dot(mouth_center - nose, face_axis)) / eye_dist
+
+    context.baseline_v_jaw = v_jaw_neutral
+    context.cached_v_jaw = v_jaw_neutral
+
+    # 1. Closed mouth: jaw drop is near zero
+    jaw_drop = v_jaw_neutral - context.baseline_v_jaw
+    assert jaw_drop < 0.01
+
+    # 2. Open mouth / jaw drop: mouth corners drop downward by 15 pixels
+    open_kps = neutral_kps.copy()
+    open_kps[3, 1] += 15.0
+    open_kps[4, 1] += 15.0
+
+    open_mouth_center = (open_kps[3] + open_kps[4]) * 0.5
+    open_face_v = open_mouth_center - eye_center
+    open_face_axis = open_face_v / (float(np.linalg.norm(open_face_v)) + 1e-6)
+    v_jaw_open = float(np.dot(open_mouth_center - nose, open_face_axis)) / eye_dist
+
+    open_jaw_drop = v_jaw_open - context.baseline_v_jaw
+    # Jaw drop must be significant (> 0.035 threshold)
+    assert open_jaw_drop > 0.035, f"Expected jaw drop > 0.035, got {open_jaw_drop:.4f}"
+

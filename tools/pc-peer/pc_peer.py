@@ -83,7 +83,9 @@ async def main() -> None:
     ap.add_argument("--camera", type=int, default=0)
     ap.add_argument("--width", type=int, default=1280)
     ap.add_argument("--height", type=int, default=720)
+    ap.add_argument("--preview", action="store_true", help="show live preview window")
     args = ap.parse_args()
+
 
     ref_b64 = load_reference(args.reference)
 
@@ -153,12 +155,19 @@ async def main() -> None:
                         vcam = pyvirtualcam.Camera(width=w, height=h, fps=FPS, print_fps=False)
                         print(f"[cam] virtual camera open ({w}x{h}) -> pick '{vcam.device}' in Teams/Meet/Zoom", flush=True)
                     vcam.send(rgb)
+                    if args.preview:
+                        bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+                        cv2.imshow("OmniLive Swapped Camera Preview (Q to close)", bgr)
+                        if cv2.waitKey(1) & 0xFF == ord("q"):
+                            stop_all.set()
+                            break
                     vcam.sleep_until_next_frame()
                     if not live_announced:
                         live_announced = True
                         print("[live] SWAPPED FACE IS ON THE VIRTUAL CAMERA", flush=True)
 
             asyncio.ensure_future(pump())
+
 
         await pc.setLocalDescription(await pc.createOffer())
         for _ in range(140):  # ~7 s gathering cap, same as the Android app
@@ -236,6 +245,9 @@ async def main() -> None:
         cap.release()
         if vcam is not None:
             vcam.close()
+        if args.preview:
+            cv2.destroyAllWindows()
+
 
 
 if __name__ == "__main__":

@@ -155,8 +155,22 @@ class ScrfdFaceDetector:
         target_h = max(64, target_h)
         target_w = max(64, target_w)
 
-        resized = cv2.resize(rgb, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
-        blob = (resized.astype(np.float32) - 127.5) / 128.0
+        height, width = rgb.shape[:2]
+        im_ratio = float(height) / float(width)
+        model_ratio = float(target_h) / float(target_w)
+        if im_ratio > model_ratio:
+            new_height = target_h
+            new_width = int(round(new_height / im_ratio))
+        else:
+            new_width = target_w
+            new_height = int(round(new_width * im_ratio))
+
+        det_scale = float(new_height) / float(height)
+        resized = cv2.resize(rgb, (new_width, new_height), interpolation=cv2.INTER_LINEAR)
+        canvas = np.zeros((target_h, target_w, 3), dtype=np.uint8)
+        canvas[:new_height, :new_width] = resized
+
+        blob = (canvas.astype(np.float32) - 127.5) / 128.0
         blob = np.transpose(blob, (2, 0, 1))[None, ...]
         outputs = [np.asarray(value) for value in session.run(None, {input_meta.name: blob})]
 
@@ -176,9 +190,6 @@ class ScrfdFaceDetector:
             ):
                 kps_levels = [np.asarray(v).squeeze().reshape(-1, 10).astype(np.float32) for v in tail]
 
-        height, width = rgb.shape[:2]
-        scale_x = width / float(target_w)
-        scale_y = height / float(target_h)
         regions: list[Region] = []
         strides = (8, 16, 32, 64, 128)
 
@@ -214,16 +225,16 @@ class ScrfdFaceDetector:
             for index in indexes:
                 cx, cy = centers[index]
                 left, top, right, bottom = boxes[index] * float(stride)
-                x0 = (cx - left) * scale_x
-                y0 = (cy - top) * scale_y
-                x1 = (cx + right) * scale_x
-                y1 = (cy + bottom) * scale_y
+                x0 = (cx - left) / det_scale
+                y0 = (cy - top) / det_scale
+                x1 = (cx + right) / det_scale
+                y1 = (cy + bottom) / det_scale
                 points = None
                 if kps is not None:
                     raw = kps[index].reshape(5, 2).astype(np.float32)
                     absolute = centers[index] + raw * float(stride)
                     points = tuple(
-                        (float(px) * scale_x, float(py) * scale_y) for px, py in absolute
+                        (float(px) / det_scale, float(py) / det_scale) for px, py in absolute
                     )
                 region = Region(
                     int(round(x0)),

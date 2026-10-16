@@ -149,19 +149,18 @@ def _template_points(name: str, size: int) -> np.ndarray:
     return (base * float(size)).astype(np.float32)
 
 
-def _similarity(src_pts: np.ndarray, dst_pts: np.ndarray) -> np.ndarray | None:
+def _similarity(src5: np.ndarray, dst5: np.ndarray) -> np.ndarray | None:
     """Exact least-squares similarity transform (Umeyama algorithm)."""
-    src = np.asarray(src_pts, dtype=np.float64).reshape(-1, 2)
-    dst = np.asarray(dst_pts, dtype=np.float64).reshape(-1, 2)
-    n = float(src.shape[0])
+    src = np.asarray(src5, dtype=np.float64).reshape(5, 2)
+    dst = np.asarray(dst5, dtype=np.float64).reshape(5, 2)
     mu_src = src.mean(axis=0)
     mu_dst = dst.mean(axis=0)
     centered_src = src - mu_src
     centered_dst = dst - mu_dst
-    variance = float((centered_src**2).sum() / n)
+    variance = float((centered_src**2).sum() / 5.0)
     if variance < 1e-9:
         return None
-    cov = (centered_dst.T @ centered_src) / n
+    cov = (centered_dst.T @ centered_src) / 5.0
     left, singular, right_t = np.linalg.svd(cov)
     reflect = np.eye(2)
     if np.linalg.det(left) * np.linalg.det(right_t) < 0:
@@ -178,34 +177,9 @@ def _similarity(src_pts: np.ndarray, dst_pts: np.ndarray) -> np.ndarray | None:
 def norm_crop(
     img: np.ndarray, kps: np.ndarray, image_size: int = 128, template: str = "arcface_112"
 ):
-    """Align a face to a canonical template with cranial expression decoupling.
-
-    Human mouth opening drops the mouth corners (kps[3], kps[4]). Fitting standard 5-point
-    least squares would shrink the skull scale by ~20% and shift the skull center during speech.
-    Expression decoupling isolates cranial scale & orientation so speech and wide mouth openings
-    never shrink, squash, or deform the head.
-    """
+    """Align a face to a canonical template."""
     dst = _template_points(template, image_size)
-    src = np.asarray(kps, dtype=np.float32).reshape(5, 2)
-
-    eye_dist = float(np.linalg.norm(src[1] - src[0])) + 1e-6
-    eye_center = (src[0] + src[1]) * 0.5
-    face_v = (src[3] + src[4]) * 0.5 - eye_center
-    face_len = float(np.linalg.norm(face_v)) + 1e-6
-    face_axis = face_v / face_len
-
-    dst_eye_dist = float(np.linalg.norm(dst[1] - dst[0])) + 1e-6
-    dst_mouth_v = (dst[3] + dst[4]) * 0.5 - (dst[0] + dst[1]) * 0.5
-    neutral_ratio = float(np.linalg.norm(dst_mouth_v)) / dst_eye_dist
-
-    neutral_mouth = eye_center + face_axis * (eye_dist * neutral_ratio)
-    mouth_offset = (src[3] + src[4]) * 0.5 - neutral_mouth
-
-    src_decoupled = src.copy()
-    src_decoupled[3] -= mouth_offset
-    src_decoupled[4] -= mouth_offset
-
-    transform = _similarity(src_decoupled, dst)
+    transform = _similarity(np.asarray(kps, dtype=np.float32).reshape(5, 2), dst)
     if transform is None:
         return None, None
     warped = cv2.warpAffine(
@@ -315,16 +289,19 @@ def _face_oval(size: int, template: str = "arcface_112", grow: float = 1.0) -> n
     eye_dist = float(np.linalg.norm(right_eye - left_eye)) + 1e-6
     cx = float((left_eye[0] + right_eye[0]) * 0.5)
     cy = float((left_eye[1] + right_eye[1]) * 0.5 + eye_dist * 0.65)
-    rx = eye_dist * 1.65 * grow  # covers side-cheek at yaw angles
-    ry = eye_dist * 2.25 * grow  # covers full jawline down to y=248 without chin cut-off
+    rx = eye_dist * 1.65 * grow  # widened from 1.45: covers side-cheek at yaw angles
+    ry = eye_dist * 1.95 * grow
     yy, xx = np.mgrid[0:size, 0:size].astype(np.float32)
     oval = (((xx - cx) / rx) ** 2 + ((yy - cy) / ry) ** 2) <= 1.0
     mask = np.zeros((size, size), dtype=np.float32)
     mask[oval] = 1.0
-    # Clean 3px Gaussian boundary feather keeps chin 100% opaque without hovering blur
-    blurred = cv2.GaussianBlur(mask, (9, 9), sigmaX=3.0)
-    result = blurred * _soft_box_mask(size, margin=max(4, int(size * 0.04)))
-    return np.clip(result, 0.0, 1.0).astype(np.float32)
+    kernel = max(5, int(round(size / 22.0)))
+    if kernel % 2 == 0:
+        kernel += 1
+    mask = cv2.erode(mask, np.ones((kernel, kernel), np.uint8))
+    blurred = cv2.GaussianBlur(mask, (0, 0), sigmaX=float(size) / 28.0)
+    # Combine with crop boundary feathering to guarantee no edge clipping
+    return blurred * _soft_box_mask(size, margin=max(6, int(size * 0.08)))
 
 
 def paste_back(
@@ -903,9 +880,8 @@ class FaceSwapEngine:
             pred_labels = np.argmax(b_out[0], axis=0).astype(np.uint8)
 
             # Class 11 is inner mouth (oral cavity, teeth, tongue).
-            # Class 13 is lower lip (articulates and drops with the jaw during speech/opening).
+            # Gate out any spurious detections outside the anatomical mouth region.
             inner_mouth_512 = (pred_labels == 11).astype(np.float32)
-            lower_lip_512 = (pred_labels == 13).astype(np.float32)
             y_min, y_max = int(512 * 0.50), int(512 * 0.95)
             x_min, x_max = int(512 * 0.20), int(512 * 0.80)
             inner_mouth_512[:y_min, :] = 0.0
@@ -913,20 +889,12 @@ class FaceSwapEngine:
             inner_mouth_512[:, :x_min] = 0.0
             inner_mouth_512[:, x_max:] = 0.0
 
-            lower_lip_512[:y_min, :] = 0.0
-            lower_lip_512[y_max:, :] = 0.0
-            lower_lip_512[:, :x_min] = 0.0
-            lower_lip_512[:, x_max:] = 0.0
-
             # If mouth is closed (no inner mouth pixels), skip blending
             if inner_mouth_512.sum() < 8.0:
                 return swapped
 
-            # When mouth opens, include the live articulated lower lip so the mouth aperture
-            # opens naturally with the jaw, eliminating lower-lip/chin collision and blur.
-            mouth_articulated = np.maximum(inner_mouth_512, lower_lip_512 * 0.85)
             inner_mouth_mask = cv2.resize(
-                mouth_articulated, (size, size), interpolation=cv2.INTER_LINEAR
+                inner_mouth_512, (size, size), interpolation=cv2.INTER_LINEAR
             )
             # Feather gently (5x5 Gaussian blur) for seamless border transition between lips and teeth
             feathered = cv2.GaussianBlur(inner_mouth_mask, (5, 5), sigmaX=1.5)

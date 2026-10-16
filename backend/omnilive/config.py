@@ -78,6 +78,10 @@ class Settings:
         "OMNILIVE_XSEG_MODEL", "occluder/xseg_2.onnx"
     )
     xseg_enabled: bool = _bool("OMNILIVE_XSEG_ENABLED", True)
+    parser_model: str = os.getenv(
+        "OMNILIVE_PARSER_MODEL", "parsers/bisenet_resnet_18.onnx"
+    )
+    parser_enabled: bool = _bool("OMNILIVE_PARSER_ENABLED", True)
     region_padding: float = float(os.getenv("OMNILIVE_REGION_PADDING", "0.22"))
     tracker_min_confidence: float = float(os.getenv("OMNILIVE_TRACKER_MIN_CONFIDENCE", "0.22"))
     processor_context_ttl_seconds: int = int(os.getenv("OMNILIVE_PROCESSOR_CONTEXT_TTL_SECONDS", "30"))

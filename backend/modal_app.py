@@ -49,6 +49,7 @@ app=modal.App("omnilive")
         "OMNILIVE_SWAPPER_ENGINE": "hyper1c",
         "OMNILIVE_ENHANCER_ENABLED": "false",
         "OMNILIVE_XSEG_ENABLED": "true",
+        "OMNILIVE_PARSER_ENABLED": "true",
         "OMNILIVE_ICE_URLS": (
             "stun:stun.relay.metered.ca:80,"
             "turn:global.relay.metered.ca:80,"

@@ -606,6 +606,7 @@ class FaceSwapEngine:
         self.arcface = _LazySwapSession(settings.arcface_model)
         self.enhancer = _LazySwapSession(settings.enhancer_model)
         self.occluder = _LazySwapSession(settings.xseg_model)
+        self.parser = _LazySwapSession(settings.parser_model)
         self._emap: np.ndarray | None = None
         self._sources: dict[str, dict] = {}
         self._stream_sha: dict[str, str] = {}
@@ -626,6 +627,10 @@ class FaceSwapEngine:
     @property
     def occluder_enabled(self) -> bool:
         return bool(settings.xseg_enabled) and self.occluder.configured_file_exists
+
+    @property
+    def parser_enabled(self) -> bool:
+        return bool(settings.parser_enabled) and self.parser.configured_file_exists
 
     def _emap_matrix(self) -> np.ndarray | None:
         if self._emap is not None:
@@ -842,6 +847,67 @@ class FaceSwapEngine:
         except Exception as exc:
             logger.warning("occluder skipped: %s", exc)
             return None
+
+    def _blend_inner_mouth(
+        self, swapped: np.ndarray, aligned: np.ndarray, size: int
+    ) -> np.ndarray:
+        """Seamlessly punch through the real speaker's inner mouth (teeth, tongue, oral cavity).
+
+        Neural swapper models conditioned on static 2D reference photos synthesize closed or
+        blurry mouths. BiSeNet face parsing segments the speaker's real inner oral cavity
+        (class 11 in CelebAMask-HQ), which is feathered and composited into the swapped face
+        so that live teeth and tongue show naturally without seam artifacts.
+        """
+        if not self.parser_enabled:
+            return swapped
+        try:
+            session = self.parser.load()
+            if session is None:
+                return swapped
+
+            # BiSeNet standard: 512x512 RGB normalized with ImageNet stats
+            b_input = cv2.resize(aligned, (512, 512), interpolation=cv2.INTER_LINEAR)
+            mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+            std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+            b_norm = (b_input.astype(np.float32) / 255.0 - mean) / std
+            b_tensor = np.transpose(b_norm, (2, 0, 1))[None, ...].astype(np.float32)
+
+            meta = session.get_inputs()[0]
+            with self._swap_lock:
+                b_out = session.run(None, {meta.name: b_tensor})[0]
+
+            # Argmax over 19 classes
+            pred_labels = np.argmax(b_out[0], axis=0).astype(np.uint8)
+
+            # Class 11 is inner mouth (oral cavity, teeth, tongue).
+            # Gate out any spurious detections outside the anatomical mouth region.
+            inner_mouth_512 = (pred_labels == 11).astype(np.float32)
+            y_min, y_max = int(512 * 0.50), int(512 * 0.95)
+            x_min, x_max = int(512 * 0.20), int(512 * 0.80)
+            inner_mouth_512[:y_min, :] = 0.0
+            inner_mouth_512[y_max:, :] = 0.0
+            inner_mouth_512[:, :x_min] = 0.0
+            inner_mouth_512[:, x_max:] = 0.0
+
+            # If mouth is closed (no inner mouth pixels), skip blending
+            if inner_mouth_512.sum() < 8.0:
+                return swapped
+
+            inner_mouth_mask = cv2.resize(
+                inner_mouth_512, (size, size), interpolation=cv2.INTER_LINEAR
+            )
+            # Feather gently (5x5 Gaussian blur) for seamless border transition between lips and teeth
+            feathered = cv2.GaussianBlur(inner_mouth_mask, (5, 5), sigmaX=1.5)
+            feathered = np.clip(feathered, 0.0, 1.0)[..., None]
+
+            blended = (
+                swapped.astype(np.float32) * (1.0 - feathered)
+                + aligned.astype(np.float32) * feathered
+            )
+            return np.clip(blended, 0, 255).astype(np.uint8)
+        except Exception as exc:
+            logger.warning("inner-mouth parser skipped: %s", exc)
+            return swapped
 
     def _context(self, stream_key: str, profile_name: str) -> SwapStream:
         now = time.perf_counter()
@@ -1068,13 +1134,13 @@ class FaceSwapEngine:
         mouth_gray = cv2.cvtColor(live_mouth, cv2.COLOR_RGB2GRAY)
         p5, p95 = float(np.percentile(mouth_gray, 5)), float(np.percentile(mouth_gray, 95))
         mouth_contrast = p95 - p5
-        has_open_oral_features = mouth_contrast > 70.0 and (p95 > 165.0 or p5 < 45.0)
+        has_open_oral_features = mouth_contrast > 55.0 and (p95 > 150.0 or p5 < 50.0)
 
         # Trigger immediate neural inference whenever mouth is opening, speaking, or articulated
         force_mouth_inference = (
-            jaw_drop > 0.035
-            or jaw_delta > 0.020
-            or mouth_diff > 4.5
+            jaw_drop > 0.025
+            or jaw_delta > 0.015
+            or mouth_diff > 3.5
             or has_open_oral_features
         )
 
@@ -1099,6 +1165,7 @@ class FaceSwapEngine:
             except Exception as exc:
                 logger.debug("live skin match skipped: %s", exc)
             swapped = self._enhance(swapped, size)
+            swapped = self._blend_inner_mouth(swapped, aligned, size)
 
             neural_ms = (time.perf_counter() - started) * 1000.0
             model_window.add(neural_ms)
@@ -1222,6 +1289,8 @@ class FaceSwapEngine:
             "enhancer_enabled": self.enhancer_enabled,
             "occluder_model": self.occluder.status(),
             "occluder_enabled": self.occluder_enabled,
+            "parser_model": self.parser.status(),
+            "parser_enabled": self.parser_enabled,
             "detector_backend": self.detector.name,
             "emap_loaded": self._emap is not None,
             "cached_identities": len(self._sources),
@@ -1260,6 +1329,13 @@ class FaceSwapEngine:
                     feeds[source_meta.name] = dummy_latent
                 with self._swap_lock:
                     swap_session.run(None, feeds)
+            if self.parser_enabled:
+                parser_session = self.parser.load()
+                if parser_session is not None:
+                    meta = parser_session.get_inputs()[0]
+                    dummy_parse = np.zeros((1, 3, 512, 512), dtype=np.float32)
+                    with self._swap_lock:
+                        parser_session.run(None, {meta.name: dummy_parse})
             logger.info("face swap GPU kernels pre-warmed successfully")
         except Exception as exc:
             logger.warning("face swap pre-warm failed: %s", exc)
@@ -1271,6 +1347,8 @@ class FaceSwapEngine:
             self.enhancer.load()
         if self.occluder_enabled:
             self.occluder.load()
+        if self.parser_enabled:
+            self.parser.load()
         if self.spec["mapped"]:
             self._emap_matrix()
         self.warmup()

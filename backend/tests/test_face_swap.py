@@ -261,3 +261,62 @@ def test_vertical_jaw_drop_and_mouth_dynamics():
     # Jaw drop must be significant (> 0.035 threshold)
     assert open_jaw_drop > 0.035, f"Expected jaw drop > 0.035, got {open_jaw_drop:.4f}"
 
+
+def test_face_swap_parser_status_and_fallback():
+    """FaceSwapEngine exposes parser status and falls back gracefully when model absent."""
+    from omnilive.face_swap import FaceSwapEngine
+
+    engine = FaceSwapEngine()
+    assert hasattr(engine, "parser")
+    assert hasattr(engine, "parser_enabled")
+    status = engine.status()
+    assert "parser_model" in status
+    assert "parser_enabled" in status
+
+    # Without the parser loaded/present, _blend_inner_mouth returns swapped untouched
+    swapped = np.full((256, 256, 3), 200, dtype=np.uint8)
+    aligned = np.full((256, 256, 3), 50, dtype=np.uint8)
+    res = engine._blend_inner_mouth(swapped, aligned, 256)
+    assert np.array_equal(res, swapped)
+
+
+def test_blend_inner_mouth_passthrough():
+    """Inner mouth pass-through blends speaker teeth into swapped face inside mouth cavity."""
+    from unittest.mock import MagicMock
+    from omnilive.face_swap import FaceSwapEngine
+
+    engine = FaceSwapEngine()
+    swapped = np.full((256, 256, 3), 200, dtype=np.uint8)  # bright swapped face
+    aligned = np.full((256, 256, 3), 50, dtype=np.uint8)   # dark speaker teeth/mouth
+
+    # Mock parser session returning 19-class logits with class 11 (inner mouth) in the mouth center
+    mock_session = MagicMock()
+    mock_input = MagicMock()
+    mock_input.name = "input"
+    mock_session.get_inputs.return_value = [mock_input]
+
+    # Create synthetic logits (1, 19, 512, 512) where class 0 is default (logits=10.0)
+    # and class 11 (inner mouth) has highest logit in mouth region (y: 350..400, x: 220..300)
+    logits = np.full((1, 19, 512, 512), -10.0, dtype=np.float32)
+    logits[0, 0, :, :] = 5.0
+    logits[0, 11, 360:390, 230:280] = 20.0  # open oral cavity with teeth
+    mock_session.run.return_value = [logits]
+
+    # Temporarily set mock session and enable parser
+    engine.parser._session = mock_session
+    original_configured = engine.parser.configured_file_exists
+    try:
+        type(engine.parser).configured_file_exists = property(lambda self: True)
+        blended = engine._blend_inner_mouth(swapped, aligned, 256)
+        assert blended.shape == (256, 256, 3)
+
+        # Cheeks and forehead (e.g. y=100, x=128) must remain 100% swapped (200)
+        assert blended[100, 128, 0] == 200
+
+        # Mouth interior (mapped from 512 -> 256: y ~ 185, x ~ 128) must show speaker pixels (near 50)
+        mouth_pixel = blended[187, 128, 0]
+        assert mouth_pixel < 80, f"Expected teeth pass-through (<80), got {mouth_pixel}"
+    finally:
+        engine.parser._session = None
+        type(engine.parser).configured_file_exists = original_configured
+

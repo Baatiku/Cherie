@@ -320,3 +320,30 @@ def test_blend_inner_mouth_passthrough():
         engine.parser._session = None
         type(engine.parser).configured_file_exists = original_configured
 
+
+def test_norm_crop_expression_decoupling_stability():
+    """Mouth opening / jaw drop must not shrink, squash, or shift skull scale."""
+    from omnilive.face_swap import _ARCFACE_128, _template_points, norm_crop, _decompose_similarity
+
+    frame = np.full((300, 300, 3), 128, dtype=np.uint8)
+    dst = _template_points("arcface_128", 256)
+
+    # 1. Neutral face landmarks
+    neutral_kps = dst.copy()
+    _, t_neutral = norm_crop(frame, neutral_kps, 256, "arcface_128")
+    assert t_neutral is not None
+    _, _, scale_neutral, _ = _decompose_similarity(t_neutral)
+
+    # 2. Open mouth / speech: jaw drops by 25 pixels
+    open_kps = dst.copy()
+    open_kps[3, 1] += 25.0
+    open_kps[4, 1] += 25.0
+    _, t_open = norm_crop(frame, open_kps, 256, "arcface_128")
+    assert t_open is not None
+    _, _, scale_open, _ = _decompose_similarity(t_open)
+
+    # Scale must remain stable (within 0.5%, not the 18% shrink of raw 5-point Umeyama)
+    scale_error = abs(scale_open - scale_neutral)
+    assert scale_error < 0.005, f"Expected scale error < 0.005, got {scale_error:.4f}"
+
+
